@@ -3,8 +3,6 @@ import {
   ScopeError,
   parseScope,
   isInScope,
-  assertInScope,
-  checkUrl,
   loadScope,
   saveScope,
   scopeViolations,
@@ -54,35 +52,6 @@ describe("isInScope", () => {
   })
 })
 
-describe("assertInScope (fail-closed)", () => {
-  test("throws when scope is null (RF#5)", () => {
-    expect(() => assertInScope(null, "example.test")).toThrow(ScopeError)
-  })
-  test("throws when host out of scope", () => {
-    expect(() => assertInScope(scope(["a.test"]), "b.test")).toThrow(ScopeError)
-  })
-  test("passes when in scope", () => {
-    expect(() => assertInScope(scope(["a.test"]), "a.test")).not.toThrow()
-  })
-
-  // SSRF guard removed intentionally: only DNS domains are fence-checked.
-  // Numeric and local hosts are the operator's conscious choice.
-  test("never checks numeric or local hosts (operator is responsible)", () => {
-    const sc = scope(["a.test"])
-    expect(() => assertInScope(sc, "10.0.0.5")).not.toThrow()
-    expect(() => assertInScope(sc, "192.168.1.10")).not.toThrow()
-    expect(() => assertInScope(sc, "169.254.169.254")).not.toThrow()
-    expect(() => assertInScope(sc, "203.0.113.9")).not.toThrow()
-    expect(() => assertInScope(sc, "2852039166")).not.toThrow()
-    expect(() => assertInScope(sc, "localhost")).not.toThrow()
-    expect(() => assertInScope(sc, "mycontainer")).not.toThrow()
-  })
-  test("still fences out-of-scope domains", () => {
-    expect(() => assertInScope(scope(["a.test"]), "b.test")).toThrow(ScopeError)
-    expect(() => assertInScope(scope(["a.test"]), "scanme.nmap.org")).toThrow(ScopeError)
-  })
-})
-
 describe("URL-form scope targets are normalized", () => {
   test("saveScope normalizes url targets to hostnames", () => {
     const dir = require("node:os").tmpdir() + "/hopper-fix1-" + Date.now()
@@ -91,33 +60,11 @@ describe("URL-form scope targets are normalized", () => {
     const loaded = loadScope(dir)!
     expect(loaded.targets).toEqual(["localhost", "app.lab.test"])
     expect(isInScope(loaded, "localhost")).toBe(true)
-    expect(() => checkUrl(loaded, "http://localhost:3000/api")).not.toThrow()
     require("node:fs").rmSync(dir, { recursive: true, force: true })
   })
 
   test("isInScope defensively normalizes url-shaped targets", () => {
     expect(isInScope({ targets: ["https://raw.example.test/path"], strict: true, created: "x" }, "raw.example.test")).toBe(true)
-  })
-})
-
-describe("checkUrl", () => {
-  test("accepts https url with in-scope host (port stripped)", () => {
-    const u = checkUrl(scope(["*.example.test"]), "https://sub.example.test:8443/path")
-    expect(u.hostname).toBe("sub.example.test")
-  })
-  test("rejects non-http protocol", () => {
-    expect(() => checkUrl(scope(["*.example.test"]), "file:///etc/passwd")).toThrow(ScopeError)
-  })
-  test("rejects out-of-scope host", () => {
-    expect(() => checkUrl(scope(["a.test"]), "https://b.test/")).toThrow(ScopeError)
-  })
-  test("rejects when scope null", () => {
-    expect(() => checkUrl(null, "https://a.test/")).toThrow(ScopeError)
-  })
-  test("auto-allows loopback and cloud metadata with an active scope (SSRF guard removed)", () => {
-    const sc = scope(["localhost"])
-    expect(() => checkUrl(sc, "http://169.254.169.254/latest/meta-data")).not.toThrow()
-    expect(() => checkUrl(sc, "http://127.0.0.1:3000/api")).not.toThrow()
   })
 })
 

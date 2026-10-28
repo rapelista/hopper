@@ -121,7 +121,8 @@ export class HopperStore {
       [op.id, op.name, op.target, op.status, op.created_at, op.updated_at],
     )
     if (this.configDir) {
-      // scope bootstrap is owned by the store so every creation path stays fail-closed
+      // scope bootstrap is owned by the store so every creation path activates
+      // the fence the dialog consults (dialog-always: the fence asks, never blocks)
       saveScope(this.configDir, { targets: [target], strict: true, created: now })
     }
     return op

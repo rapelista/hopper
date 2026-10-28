@@ -148,28 +148,3 @@ export const OPSEC_ADVISORY_HOSTS: readonly string[] = [
   "otx.alienvault.com",
   "web.archive.org",
 ]
-
-export function assertInScope(scope: Scope | null, host: string): void {
-  if (scope === null) {
-    throw new ScopeError("no active scope (fail-closed): refusing to engage any target — create one via /pwn or the operation tool first")
-  }
-  const h = normalizeHost(host)
-  if (!isFenceableHost(h)) return // IPs & local names are the operator's conscious choice — never fence-checked
-  if (!isInScope(scope, h)) {
-    throw new ScopeError(`target "${h}" is out of scope — allowed: ${scope.targets.join(", ")}`)
-  }
-}
-
-export function checkUrl(scope: Scope | null, url: string): URL {
-  let parsed: URL
-  try {
-    parsed = new URL(url)
-  } catch {
-    throw new ScopeError(`invalid URL: ${url}`)
-  }
-  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
-    throw new ScopeError(`refusing non-http(s) protocol: ${parsed.protocol}`)
-  }
-  assertInScope(scope, parsed.hostname)
-  return parsed
-}
