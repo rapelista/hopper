@@ -36,6 +36,7 @@ export interface PanelCtx {
   ui: {
     slot: (spec: { append: string; render: (input: { name?: string; close?: () => void }) => unknown }) => () => void
     panel?: { open: (name: string) => boolean; close: () => void }
+    toast?: { show: (t: { title?: string; message: string; variant?: "success" | "error" | "warning" }) => void }
   }
   client: { rpc: (def: unknown) => HopperRpcClient & { findings: (input: { operationId?: string }, options?: { location?: unknown }) => Promise<{ items: FindingSummary[] }> } }
   keymap?: { layer: (layer: unknown) => () => void }
@@ -84,7 +85,16 @@ function LedgerPanel(props: { ctx: PanelCtx; model: () => PanelModel; close?: ()
   props.ctx.keymap?.layer(() => ({
     commands: [
       { id: "hopper.ledger.close", bind: "escape", title: "Close the ledger", run: close },
-      { id: "hopper.ledger.tab.next", bind: "right", title: "Next lifecycle tab", run: () => setTab((t) => cycleStatus(t, 1)) },
+      {
+        id: "hopper.ledger.tab.next",
+        bind: "right",
+        title: "Next lifecycle tab",
+        run: () => {
+          setTab((t) => cycleStatus(t, 1))
+          // TEMP-PROBE: does the command run and does the signal hold the new value?
+          props.ctx.ui.toast?.show({ title: "probe", message: `next → ${tab()}` })
+        },
+      },
       { id: "hopper.ledger.tab.prev", bind: "left", title: "Previous lifecycle tab", run: () => setTab((t) => cycleStatus(t, -1)) },
       ...LIFECYCLE.map((status, i) => ({
         id: `hopper.ledger.tab.${i + 1}`,
@@ -121,7 +131,7 @@ function LedgerPanel(props: { ctx: PanelCtx; model: () => PanelModel; close?: ()
     <box flexDirection="column" width="100%" height="100%" paddingTop={1} paddingBottom={1} paddingLeft={2} paddingRight={2}>
       <box flexDirection="row" gap={1}>
         <text fg={base} flexGrow={1} wrapMode="none" truncate>
-          <b>Ledger</b>
+          <b>Ledger{` — ${tab()}`}</b>
         </text>
         <text fg={muted} wrapMode="none" flexShrink={0}>
           {tab()[0]!.toUpperCase() + tab().slice(1)}
