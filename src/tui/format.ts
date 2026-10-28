@@ -16,6 +16,13 @@ const STATUS_SUFFIX: Array<[keyof FindingsCounts, string]> = [
 
 export const LIFECYCLE = ["candidate", "observed", "verified", "reportable", "rejected", "stale"] as const
 
+/** Next/previous lifecycle tab, wrapping around. */
+export function cycleStatus(current: string, direction: 1 | -1): string {
+  const idx = LIFECYCLE.indexOf(current as (typeof LIFECYCLE)[number])
+  const base = idx === -1 ? 0 : idx
+  return LIFECYCLE[(base + direction + LIFECYCLE.length) % LIFECYCLE.length]!
+}
+
 /** `3c/1v` — nonzero statuses only, lifecycle order; "" when the ledger is empty. */
 export function compactCounts(c: FindingsCounts): string {
   return STATUS_SUFFIX.filter(([key]) => c[key] > 0)

@@ -31,6 +31,7 @@ export default Plugin.define({
       registerPanel({
         ui: context.ui,
         client: context.client,
+        keymap: context.keymap,
         theme: context.theme,
         location,
       } as unknown as PanelCtx).cleanup,

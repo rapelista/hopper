@@ -4,6 +4,7 @@ import { buildPanelModel } from "../src/tui/panel"
 import { parsePwnArgument, buildKickoffPrompt, registerCommands } from "../src/tui/commands"
 import { registerNotifications } from "../src/tui/notifications"
 import { currentSession } from "../src/tui/current-session"
+import { LIFECYCLE, cycleStatus } from "../src/tui/format"
 import type { FindingSummary, OperationStatusResult } from "../src/rpc"
 
 const status: OperationStatusResult = {
@@ -102,6 +103,14 @@ describe("panel model", () => {
     expect(model.groups[0]!.items.map((i) => i.id)).toEqual(["b", "c"])
   })
 
+  test("byStatus carries every lifecycle bucket, empty ones included (tab source)", () => {
+    const model = buildPanelModel(status, [f("a", "verified"), f("b", "candidate"), f("c", "candidate")])
+    expect(Object.keys(model.byStatus)).toEqual([...LIFECYCLE])
+    expect(model.byStatus.candidate!.map((i) => i.id)).toEqual(["b", "c"])
+    expect(model.byStatus.observed).toEqual([])
+    expect(model.byStatus.stale).toEqual([])
+  })
+
   test("no operation → empty model", () => {
     const model = buildPanelModel(
       { operation: null, opsec: "normal", findings: { candidate: 0, observed: 0, verified: 0, reportable: 0, rejected: 0, stale: 0 } },
@@ -109,6 +118,21 @@ describe("panel model", () => {
     )
     expect(model.operation).toBeNull()
     expect(model.groups).toEqual([])
+  })
+})
+
+describe("cycleStatus (panel tab cycling)", () => {
+  test("steps forward and wraps", () => {
+    expect(cycleStatus("candidate", 1)).toBe("observed")
+    expect(cycleStatus("stale", 1)).toBe("candidate")
+  })
+  test("steps backward and wraps", () => {
+    expect(cycleStatus("candidate", -1)).toBe("stale")
+    expect(cycleStatus("verified", -1)).toBe("observed")
+  })
+  test("unknown status falls back to a sane neighbor", () => {
+    const all: string[] = [...LIFECYCLE]
+    expect(all).toContain(cycleStatus("nonsense", 1))
   })
 })
 

@@ -1,32 +1,40 @@
-import { createSignal } from "solid-js"
+import { createSignal, For, Show } from "solid-js"
 import { Hopper, type FindingSummary, type OperationStatusResult } from "../rpc"
-import { groupFindings, severityToken } from "./format"
+import { LIFECYCLE, cycleStatus, severityToken } from "./format"
 import { resolveToken, type HopperTheme } from "./theme"
 import type { HopperRpcClient } from "./status"
 
 /**
- * Surface 2 — the findings ledger panel. Hopper: "The TUI is the ledger."
- * One session.panel contribution (`hopper.ledger`) grouping findings along
- * the lifecycle, severity-colored through theme tokens.
+ * Surface 2 — the findings ledger panel, tabbed per lifecycle status.
+ * Hopper: "The TUI is the ledger." Tab bar + list; left/right cycle,
+ * 1–6 jump, click a tab to switch. The keymap layer is created inside the
+ * component, so it lives and dies with the panel and only fires while the
+ * panel owns input (diff-viewer idiom).
  */
 
 export interface PanelModel {
   operation: OperationStatusResult["operation"]
   opsec: OperationStatusResult["opsec"]
   groups: Array<{ status: string; items: FindingSummary[] }>
+  /** every lifecycle bucket, empty ones included — the panel's tab source */
+  byStatus: Record<string, FindingSummary[]>
 }
 
 export function buildPanelModel(status: OperationStatusResult | null, findings: FindingSummary[]): PanelModel {
+  const byStatus: Record<string, FindingSummary[]> = {}
+  for (const lifecycle of LIFECYCLE) byStatus[lifecycle] = findings.filter((f) => f.status === lifecycle)
   return {
     operation: status?.operation ?? null,
     opsec: status?.opsec ?? "normal",
-    groups: groupFindings(findings),
+    groups: LIFECYCLE.map((g) => ({ status: g, items: byStatus[g]! })).filter((g) => g.items.length > 0),
+    byStatus,
   }
 }
 
 export interface PanelCtx {
   ui: { slot: (spec: { append: string; render: (input: { name?: string }) => unknown }) => () => void }
   client: { rpc: (def: unknown) => HopperRpcClient & { findings: (input: { operationId?: string }, options?: { location?: unknown }) => Promise<{ items: FindingSummary[] }> } }
+  keymap?: { layer: (layer: unknown) => () => void }
   theme?: HopperTheme
   location?: unknown
 }
@@ -46,56 +54,96 @@ export function registerPanel(ctx: PanelCtx): { cleanup: () => void; model: () =
   }
   void refresh()
 
-  const token = (severity: string) => resolveToken(ctx.theme as HopperTheme | undefined, severityToken(severity))
-  const groupToken = (status: string) => {
-    if (status === "reportable" || status === "verified") return resolveToken(ctx.theme as HopperTheme | undefined, "base")
-    if (status === "rejected" || status === "stale") return resolveToken(ctx.theme as HopperTheme | undefined, "muted")
-    return resolveToken(ctx.theme as HopperTheme | undefined, "warning")
-  }
-
   const stops = [
     rpc.events.on("operation.changed", () => void refresh()),
     rpc.events.on("finding.changed", () => void refresh()),
     ctx.ui.slot({
       append: "session.panel",
-      render: (panel: { name?: string; toggleFullscreen?: () => void }) =>
-        panel.name === "hopper.ledger" ? renderPanel(model(), token, groupToken) : null,
+      render: (panel: { name?: string }) =>
+        panel.name === "hopper.ledger" ? <LedgerPanel ctx={ctx} model={model} /> : null,
     }),
   ]
 
   return { model, cleanup: () => stops.forEach((stop) => stop()) }
 }
 
-function renderPanel(
-  m: PanelModel,
-  token: (severity: string) => string,
-  groupToken: (status: string) => string,
-) {
-  if (m.operation === null) {
-    return (
-      <text fg="">
-        no active operation — start one with /pwn
-      </text>
-    )
-  }
-  if (m.groups.length === 0) {
-    return (
-      <text fg="">
-        {`${m.operation.name} → ${m.operation.target} · ${m.opsec} · no findings yet`}
-      </text>
-    )
-  }
+function LedgerPanel(props: { ctx: PanelCtx; model: () => PanelModel }) {
+  const theme = props.ctx.theme
+  const base = resolveToken(theme, "base")
+  const muted = resolveToken(theme, "muted")
+  const [tab, setTab] = createSignal<string>("candidate")
+
+  // Panel-scoped keymap: created in the component, disposed with it (diff-viewer idiom)
+  props.ctx.keymap?.layer(() => ({
+    commands: [
+      { id: "hopper.ledger.tab.next", bind: "right", title: "Next lifecycle tab", run: () => setTab((t) => cycleStatus(t, 1)) },
+      { id: "hopper.ledger.tab.prev", bind: "left", title: "Previous lifecycle tab", run: () => setTab((t) => cycleStatus(t, -1)) },
+      ...LIFECYCLE.map((status, i) => ({
+        id: `hopper.ledger.tab.${i + 1}`,
+        bind: String(i + 1),
+        title: `Jump to ${status}`,
+        run: () => setTab(status),
+      })),
+    ],
+  }))
+
+  const items = () => props.model().byStatus[tab()] ?? []
+
   return (
-    <box flexDirection="column" gap={0}>
-      <text fg="">{`${m.operation.name} → ${m.operation.target} · ${m.opsec}`}</text>
-      {m.groups.map((group) => (
-        <box flexDirection="column">
-          <text fg={groupToken(group.status)}>{`${group.status} (${group.items.length})`}</text>
-          {group.items.map((f) => (
-            <text fg={token(f.severity)}>{`  [${f.severity}] ${f.title} — ${f.target}`}</text>
-          ))}
-        </box>
-      ))}
+    <box flexDirection="column" width="100%" height="100%" paddingLeft={1} paddingBottom={1}>
+      <Show
+        when={props.model().operation}
+        fallback={<text fg={muted}>no active operation — start one with /pwn</text>}
+      >
+        {(op) => (
+          <>
+            <box flexDirection="row" gap={1}>
+              <text fg={base} flexGrow={1} wrapMode="none" truncate>
+                <b>{op().name}</b>
+              </text>
+              <text fg={props.model().opsec === "strict" ? resolveToken(theme, "error") : muted} wrapMode="none" flexShrink={0}>
+                {props.model().opsec}
+              </text>
+            </box>
+            <text fg={muted} wrapMode="none" truncate>
+              {op().target}
+            </text>
+            <text> </text>
+            <box flexDirection="row" gap={1} flexShrink={0}>
+              <For each={LIFECYCLE}>
+                {(status) => (
+                  <text
+                    fg={status === tab() ? base : muted}
+                    wrapMode="none"
+                    truncate
+                    onMouseDown={() => setTab(status)}
+                  >
+                    {`${status === tab() ? "[" : " "}${status[0]!.toUpperCase() + status.slice(1)} ${props.model().byStatus[status]!.length}${status === tab() ? "]" : " "}`}
+                  </text>
+                )}
+              </For>
+            </box>
+            <text> </text>
+            <Show when={items().length > 0} fallback={<text fg={muted}>{`no ${tab()} findings`}</text>}>
+              <For each={items()}>
+                {(f) => (
+                  <box flexDirection="row" gap={1}>
+                    <text fg={resolveToken(theme, severityToken(f.severity))} flexShrink={0}>
+                      [{f.severity}]
+                    </text>
+                    <text fg={base} wrapMode="none" truncate flexGrow={1}>
+                      {f.title}
+                    </text>
+                    <text fg={muted} wrapMode="none" truncate flexShrink={0}>
+                      {f.target}
+                    </text>
+                  </box>
+                )}
+              </For>
+            </Show>
+          </>
+        )}
+      </Show>
     </box>
   )
 }
