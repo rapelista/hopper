@@ -130,18 +130,21 @@ function LedgerPanel(props: { ctx: PanelCtx; model: () => PanelModel }) {
         <Show when={items().length > 0} fallback={<text fg={muted}>{`no ${tab()} findings`}</text>}>
           <For each={items()}>
             {(f) => (
-              <box flexDirection="row" gap={1}>
-                <text fg={resolveToken(theme, severityToken(f.severity))} flexShrink={0} wrapMode="none">
-                  {`[${severityShort(f.severity)}]`}
-                </text>
-                {/* title column: always grows so the target column stays aligned
-                    even when a finding has no title and the row is URL-only */}
-                <text fg={base} wrapMode="none" truncate flexGrow={1} minWidth={0}>
-                  {f.title || " "}
-                </text>
-                <text fg={muted} wrapMode="none" truncate flexShrink={0}>
-                  {f.target}
-                </text>
+              <box flexDirection="column">
+                <box flexDirection="row" gap={1}>
+                  <text fg={resolveToken(theme, severityToken(f.severity))} flexShrink={0} wrapMode="none">
+                    {`[${severityShort(f.severity)}]`}
+                  </text>
+                  <text fg={base} wrapMode="none" truncate flexGrow={1} minWidth={0}>
+                    {f.title || " "}
+                  </text>
+                </box>
+                {/* URL aligned under the title: badge width (5) + gap (1) */}
+                <box paddingLeft={6}>
+                  <text fg={muted} wrapMode="none" truncate flexGrow={1} minWidth={0}>
+                    {f.target}
+                  </text>
+                </box>
               </box>
             )}
           </For>
