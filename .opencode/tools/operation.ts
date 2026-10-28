@@ -7,7 +7,10 @@ export default tool({
   args: {
     action: tool.schema.enum(["create", "status", "list"]).describe("What to do"),
     name: tool.schema.string().optional().describe("Operation name (create)"),
-    target: tool.schema.string().optional().describe("Target boundary: host, CIDR, or URL (create)"),
+    target: tool.schema
+      .string()
+      .optional()
+      .describe("Target boundary: host, wildcard domain, or CIDR (URLs are normalized to their hostname)"),
   },
   async execute(args, context) {
     const configDir = `${context.worktree ?? context.directory}/.opencode`

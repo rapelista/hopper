@@ -27,10 +27,16 @@ If the operation is **strict-opsec**, do not touch third-party services that pho
 - **`passive-osint` skill** — **start here**. The canonical passive workflow: crt.sh subdomains, wayback URLs, theHarvester, holehe. Load it for any domain/email/handle intelligence.
 - `websearch` — optional dorking fallback across engines, code hosts, paste sites, breach trackers when configured. Advanced operators: `site:`, `filetype:`, `intext:`, `inurl:`.
 - `webfetch` — pull one specific public page (Wayback snapshot, advisory, profile page, breach notice) for analysis.
-- `http-request` — intel APIs: VirusTotal, AbuseIPDB, URLScan, GreyNoise, HaveIBeenPwned, SecurityTrails — with precise headers. (Remember: `http-request` enforces the active scope — passive third-party APIs are unaffected because they are not the target.)
+- `http-request` — intel APIs: VirusTotal, AbuseIPDB, URLScan, GreyNoise, HaveIBeenPwned, SecurityTrails — with precise headers. Note: while an operation scope is active these third-party hosts are outside the fence and will be refused — collect from them before scope creation or ask the operator to widen the scope.
 - `bash` — passive DNS / whois / cert parsing with `jq`, text processing with `awk`/`sed`, Python for correlation. Forensics tools (`strings`, `exiftool`, `binwalk`, `tshark`, `volatility`) when the operator hands you an artifact.
 - `read` / `grep` / `glob` — read evidence files, search collected data. (`edit` is denied for this kind; deliver profiles via `finding`/`evidence` and chat.)
 - `cve` — OSV lookup when an observed component needs advisory context.
+
+## Plays first
+
+For domain / person / org targets, run the **`passive-osint`** skill before improvising (crt.sh, wayback, theHarvester, holehe). For a target that already has a web presence you also need to map, consider `/runbook web-surface <url>` (uses the passive-osint skill for subdomains before any active crawl). An `osint-target` capsule is future work — improvise those lanes with the skill by hand for now.
+
+Note: while an operation scope is active, third-party lookups that carry the target identifier are treated as **strict-opsec** and refused by the guard — passive sources are consulted before scope creation, or the operator widens the scope deliberately.
 
 ## Skills
 

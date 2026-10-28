@@ -36,8 +36,28 @@ describe("redactSecrets", () => {
     expect(redactSecrets("token: zzz")).toBe("token:<REDACTED>")
   })
 
+  test("strips quoted-JSON secret shapes", () => {
+    expect(redactSecrets('{"token": "eyJhbGci.secret.payload"}')).not.toContain("eyJhbGci")
+    expect(redactSecrets('{"access_token":"sk-91"}')).not.toContain("sk-91")
+  })
+
+  test("strips password and key material", () => {
+    expect(redactSecrets("password=hunter2")).not.toContain("hunter2")
+    expect(redactSecrets("client_secret: zzz")).not.toContain("zzz")
+    expect(redactSecrets("-----BEGIN RSA PRIVATE KEY-----\nMIIEow\n-----END RSA PRIVATE KEY-----")).not.toContain("MIIEow")
+  })
+
   test("leaves ordinary content alone", () => {
     expect(redactSecrets("GET / HTTP/1.1")).toBe("GET / HTTP/1.1")
+  })
+})
+
+describe("buildShareBundle secret hygiene", () => {
+  test("finding notes are redacted in the bundle", () => {
+    const f = store.addFinding(opId, { title: "notes-leak", severity: "low", target: "lab.test", notes: "Authorization: Bearer notetoken123" })
+    void f
+    const { bundle } = buildShareBundle(store, opId)
+    expect(JSON.stringify(bundle.findings)).not.toContain("notetoken123")
   })
 })
 

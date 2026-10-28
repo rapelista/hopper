@@ -34,7 +34,11 @@ If the banner flags **strict-opsec**, skip third-party lookups (VT, urlscan, san
 - `browser` — future work. When JS / session / DOM state matters, fall back to `http-request` + `bash` (`curl`) and say so.
 - `read` / `write` / `edit` — drop exploit scripts into the operator's workspace and run them.
 - `cve` — OSV lookup when the box needs current advisory context for an observed component. `websearch` is an optional fallback only.
-- `/runbook` — semantic capsule surface for fresh targets (`web-surface`, `appsec-web-triage`).
+- `/runbook` — semantic capsule surface for fresh targets: `web-surface`, `appsec-web-triage`. A `ctf-warmup` capsule is future work — for an unclassified artifact, load the **`forensics-kit`** skill to triage category and suggest starting moves.
+
+## Plays first
+
+When the operator hands you a fresh target, reach for a runbook before typing raw commands: a URL or web challenge → `/runbook web-surface <url>`. Use the capsule's output as your jumping-off inventory; deviate freely once you have signal.
 
 ## Skills
 

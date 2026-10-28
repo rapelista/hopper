@@ -90,6 +90,25 @@ describe("runScan scope enforcement", () => {
   })
 })
 
+describe("extra argv scope enforcement (review fix)", () => {
+  test("out-of-scope URL smuggled via extra is refused", () => {
+    expect(
+      runScan(configDir, { mode: "techscan", target: "https://sub.example.test", extra: ["http://169.254.169.254/"] }, okRun),
+    ).rejects.toBeInstanceOf(ScopeError)
+  })
+
+  test("input-file list flags are refused", () => {
+    expect(
+      runScan(configDir, { mode: "portscan", target: "10.0.0.5", extra: ["-iL", "hosts.txt"] }, okRun),
+    ).rejects.toBeInstanceOf(ScopeError)
+  })
+
+  test("harmless extra flags still pass", async () => {
+    const res = await runScan(configDir, { mode: "portscan", target: "10.0.0.5", extra: ["-Pn"] }, okRun)
+    expect(res.exitCode).toBe(0)
+  })
+})
+
 describe("tool shape", () => {
   test("default export has description covering active recon", () => {
     const t = scanner as unknown as { description: string }

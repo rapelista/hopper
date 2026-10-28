@@ -34,15 +34,23 @@ export async function queryOsv(q: OsvQuery, fetchImpl: typeof fetch = fetch): Pr
   let url: string
   if (q.cve) {
     url = `https://api.osv.dev/v1/vulns/${encodeURIComponent(q.cve)}`
-  } else if (q.package && q.ecosystem) {
-    url = `https://api.osv.dev/v1/query/${encodeURIComponent(q.ecosystem)}/${encodeURIComponent(q.package)}`
   } else if (q.package) {
-    url = `https://api.osv.dev/v1/query/npm/${encodeURIComponent(q.package)}`
+    url = `https://api.osv.dev/v1/query`
   } else {
     throw new OsvError("provide cve, or package (+ ecosystem)")
   }
 
-  const res = await fetchImpl(url)
+  const init: RequestInit | undefined = q.cve
+    ? undefined
+    : {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          package: { name: q.package, ecosystem: q.ecosystem ?? "npm" },
+        }),
+      }
+
+  const res = await fetchImpl(url, init)
   if (!res.ok) throw new OsvError(`OSV API ${res.status} for ${url}`)
 
   const data = (await res.json()) as OsvVuln | { vulns: OsvVuln[] }

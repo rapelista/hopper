@@ -5,6 +5,8 @@ import {
   isInScope,
   assertInScope,
   checkUrl,
+  loadScope,
+  saveScope,
   type Scope,
 } from "../.opencode/lib/scope"
 
@@ -60,6 +62,23 @@ describe("assertInScope (fail-closed)", () => {
   })
   test("passes when in scope", () => {
     expect(() => assertInScope(scope(["a.test"]), "a.test")).not.toThrow()
+  })
+})
+
+describe("URL-form scope targets are normalized", () => {
+  test("saveScope normalizes url targets to hostnames", () => {
+    const dir = require("node:os").tmpdir() + "/hopper-fix1-" + Date.now()
+    require("node:fs").mkdirSync(dir, { recursive: true })
+    saveScope(dir, { targets: ["http://localhost:3000", "https://app.lab.test/x"], strict: true, created: "x" })
+    const loaded = loadScope(dir)!
+    expect(loaded.targets).toEqual(["localhost", "app.lab.test"])
+    expect(isInScope(loaded, "localhost")).toBe(true)
+    expect(() => checkUrl(loaded, "http://localhost:3000/api")).not.toThrow()
+    require("node:fs").rmSync(dir, { recursive: true, force: true })
+  })
+
+  test("isInScope defensively normalizes url-shaped targets", () => {
+    expect(isInScope({ targets: ["https://raw.example.test/path"], strict: true, created: "x" }, "raw.example.test")).toBe(true)
   })
 })
 

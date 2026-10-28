@@ -1,6 +1,6 @@
 import { tool } from "@opencode-ai/plugin"
 import { mkdirSync } from "node:fs"
-import { loadScope, assertInScope, checkUrl } from "../lib/scope"
+import { loadScope, assertInScope, checkUrl, ScopeError } from "../lib/scope"
 
 export type ScannerMode = "portscan" | "dirfuzz" | "techscan"
 
@@ -63,6 +63,14 @@ export async function runScan(
   }
 
   const cmd = buildCommand(args.mode, scopeTarget(args.mode, args.target), args.extra)
+  // argv-level scope enforcement: no input-file lists, and every URL token must be in scope
+  for (let i = 0; i < cmd.argv.length; i++) {
+    const a = cmd.argv[i]!
+    if (a === "-iL" || a === "--input-file") {
+      throw new ScopeError(`scope guard: input-file lists cannot be scope-verified (${cmd.argv[i + 1] ?? ""})`)
+    }
+    if (/^https?:\/\//.test(a)) checkUrl(scope, a)
+  }
   if (Bun.which(cmd.bin) === null) {
     return {
       command: `${cmd.bin} ${cmd.argv.join(" ")}`,

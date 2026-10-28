@@ -25,9 +25,10 @@ const osvCveResponse = {
 
 describe("queryOsv", () => {
   test("maps package advisories to VulnInfo", async () => {
-    const fetchImpl = (async (input: unknown) => {
-      const url = String(input)
-      expect(url).toBe("https://api.osv.dev/v1/query/npm/demo-package")
+    const fetchImpl = (async (input: unknown, init?: RequestInit) => {
+      expect(String(input)).toBe("https://api.osv.dev/v1/query")
+      const body = JSON.parse(String(init?.body)) as { package: { name: string; ecosystem: string } }
+      expect(body.package).toEqual({ name: "demo-package", ecosystem: "npm" })
       return new Response(JSON.stringify(osvPackageResponse), { status: 200 })
     }) as unknown as typeof fetch
     const vulns = await queryOsv({ package: "demo-package", ecosystem: "npm" }, fetchImpl)

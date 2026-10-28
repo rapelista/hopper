@@ -42,6 +42,34 @@ describe("bashScopeGuard", () => {
   })
 })
 
+describe("bashScopeGuard robustness (review fixes)", () => {
+  test("url paths with file extensions are not treated as hosts", () => {
+    const sc = scope(["*.lab.test"])
+    expect(bashScopeGuard(sc, "curl https://app.lab.test/login.php").ok).toBe(true)
+    expect(bashScopeGuard(sc, "curl https://app.lab.test/static/app.js").ok).toBe(true)
+    expect(bashScopeGuard(sc, "whatweb https://app.lab.test/index.html").ok).toBe(true)
+  })
+
+  test("output-file arguments are not treated as hosts", () => {
+    expect(bashScopeGuard(scope(["*.lab.test"]), "nmap -sV -T4 app.lab.test -oN scan.log").ok).toBe(true)
+  })
+
+  test("decimal-encoded cloud metadata IP is blocked (fix #5)", () => {
+    const res = bashScopeGuard(scope(["*.lab.test"]), "curl http://2852039166/")
+    expect(res.ok).toBe(false)
+  })
+
+  test("octal-encoded public IP requires scope (fix #5)", () => {
+    // 010.0.0.1 parses as 8.0.0.1 (public) under inet_aton semantics
+    const res = bashScopeGuard(scope(["*.lab.test"]), "nmap -p 80 010.0.0.1")
+    expect(res.ok).toBe(false)
+  })
+
+  test("in-scope dotted IPv4 still passes", () => {
+    expect(bashScopeGuard(scope(["10.0.0.0/8"]), "nmap 10.1.2.3").ok).toBe(true)
+  })
+})
+
 describe("HopperKernel plugin shape", () => {
   test("exports a plugin function returning both hooks", async () => {
     expect(typeof HopperKernel).toBe("function")

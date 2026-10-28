@@ -41,9 +41,23 @@ export function loadScope(configDir: string): Scope | null {
   return parseScope(readFileSync(path, "utf8"))
 }
 
+/** Normalize a scope target: URL → hostname, lowercase, port stripped. */
+function normalizeTarget(target: string): string {
+  const t = target.trim().toLowerCase()
+  if (/^https?:\/\//.test(t)) {
+    try {
+      return new URL(t).hostname
+    } catch {
+      return t
+    }
+  }
+  return t
+}
+
 export function saveScope(configDir: string, scope: Scope): void {
   mkdirSync(configDir, { recursive: true })
-  writeFileSync(join(configDir, "scope.json"), JSON.stringify(scope, null, 2) + "\n")
+  const normalized: Scope = { ...scope, targets: scope.targets.map(normalizeTarget) }
+  writeFileSync(join(configDir, "scope.json"), JSON.stringify(normalized, null, 2) + "\n")
 }
 
 /** Normalize a host: lowercase, strip :port (IPv4/hostname), unwrap [v6]. */
@@ -86,8 +100,8 @@ function cidrContains(cidr: string, ip: string): boolean {
 
 export function isInScope(scope: Scope, host: string): boolean {
   const h = normalizeHost(host)
-  for (const target of scope.targets) {
-    const t = target.trim().toLowerCase()
+  for (const rawTarget of scope.targets) {
+    const t = normalizeTarget(rawTarget)
     if (t === h) return true
     if (t.startsWith("*.")) {
       const domain = t.slice(2)
