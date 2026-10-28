@@ -7,6 +7,7 @@ import {
   checkUrl,
   loadScope,
   saveScope,
+  scopeViolations,
   type Scope,
 } from "../src/lib/scope"
 
@@ -117,5 +118,24 @@ describe("checkUrl", () => {
     const sc = scope(["localhost"])
     expect(() => checkUrl(sc, "http://169.254.169.254/latest/meta-data")).not.toThrow()
     expect(() => checkUrl(sc, "http://127.0.0.1:3000/api")).not.toThrow()
+  })
+})
+
+describe("scopeViolations (dialog-always)", () => {
+  test("null scope: every fenceable host is a violation; IPs never", () => {
+    expect(scopeViolations(null, ["a.test", "10.0.0.5", "localhost"])).toEqual(["a.test"])
+  })
+  test("in-scope hosts yield no violations", () => {
+    expect(scopeViolations(scope(["*.example.test"]), ["sub.example.test", "example.test"])).toEqual([])
+  })
+  test("out-of-scope host is returned", () => {
+    expect(scopeViolations(scope(["example.test"]), ["scanme.nmap.org"])).toEqual(["scanme.nmap.org"])
+  })
+  test("host:port and case are normalized (RF#4)", () => {
+    expect(scopeViolations(scope(["example.test"]), ["EXAMPLE.test:8443"])).toEqual([])
+    expect(scopeViolations(scope(["example.test"]), ["OTHER.test:80"])).toEqual(["other.test"])
+  })
+  test("dedupes repeated hosts", () => {
+    expect(scopeViolations(scope(["example.test"]), ["b.test", "B.test"])).toEqual(["b.test"])
   })
 })

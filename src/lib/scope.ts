@@ -123,6 +123,18 @@ export function isInScope(scope: Scope, host: string): boolean {
   return false
 }
 
+/** Pure dialog-always policy: which fenceable hosts fall outside the scope (or any scope). */
+export function scopeViolations(scope: Scope | null, hosts: string[]): string[] {
+  const out: string[] = []
+  for (const host of hosts) {
+    const h = normalizeHost(host)
+    if (!isFenceableHost(h)) continue
+    if (scope !== null && isInScope(scope, h)) continue
+    out.push(h)
+  }
+  return [...new Set(out)]
+}
+
 export function assertInScope(scope: Scope | null, host: string): void {
   if (scope === null) {
     throw new ScopeError("no active scope (fail-closed): refusing to engage any target — create one via /pwn or the operation tool first")
