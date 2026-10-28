@@ -36,7 +36,6 @@ export default Plugin.define({
         location,
       } as unknown as PanelCtx).cleanup,
     )
-
     cleanups.push(
       registerCommands({
         keymap: context.keymap,

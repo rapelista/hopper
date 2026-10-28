@@ -1,4 +1,4 @@
-import { createSignal, For, Show } from "solid-js"
+import { createSignal, For, Show } from "./solid"
 import { Hopper, type OperationStatusResult } from "../rpc"
 import { bannerText, LIFECYCLE } from "./format"
 import { currentSession } from "./current-session"
