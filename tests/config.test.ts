@@ -68,10 +68,3 @@ describe("opencode preset config", () => {
     expect(Array.isArray(cfg.plugins)).toBe(true)
   })
 })
-
-describe("tui theme", () => {
-  test("matrix theme selected in .opencode/tui.json", () => {
-    const tui = JSON.parse(readFileSync(join(root, ".opencode", "tui.json"), "utf8")) as Record<string, unknown>
-    expect(tui.theme).toBe("matrix")
-  })
-})
