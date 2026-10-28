@@ -34,7 +34,11 @@ export interface CommandsCtx {
       select: (i: unknown) => Promise<unknown>
     }
     toast: { show: (t: { title?: string; message: string; variant?: "success" | "error" | "warning" }) => void }
-    panel: { open: (name: string) => boolean }
+    panel: {
+      open: (name: string) => boolean
+      close: () => void
+      current: () => { name: string; sessionID: string } | undefined
+    }
   }
   client: {
     rpc: (def: unknown) => HopperRpcClient & {
@@ -150,7 +154,9 @@ export function registerCommands(ctx: CommandsCtx): { cleanup: () => void } {
         slash: { name: "ledger" },
         palette: true,
         run: () => {
-          ctx.ui.panel.open("hopper.ledger")
+          // toggle: close only OUR panel; another plugin's panel is never touched
+          if (ctx.ui.panel.current()?.name === "hopper.ledger") ctx.ui.panel.close()
+          else ctx.ui.panel.open("hopper.ledger")
         },
       },
     ],

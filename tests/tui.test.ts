@@ -137,6 +137,7 @@ describe("commands module (registration)", () => {
     const dialogs: string[] = []
     const calls: Array<{ method: string; input: unknown }> = []
     const subs: Record<string, Array<(e: { data: unknown }) => void>> = {}
+    let openPanel: { name: string; sessionID: string } | undefined
     const ctx = {
       keymap: { layer: (factory: () => Record<string, unknown>) => { layers.push(factory()); return () => {} } },
       ui: {
@@ -146,7 +147,11 @@ describe("commands module (registration)", () => {
           select: async (i: unknown) => { dialogs.push("select"); return "strict" },
         },
         toast: { show: (t: unknown) => { toasts.push(t) } },
-        panel: { open: (name: string) => { calls.push({ method: "panel.open", input: name }); return true } },
+        panel: {
+          open: (name: string) => { calls.push({ method: "panel.open", input: name }); openPanel = { name, sessionID: "s1" }; return true },
+          close: () => { calls.push({ method: "panel.close", input: undefined }); openPanel = undefined },
+          current: () => openPanel,
+        },
       },
       client: {
         rpc: () => ({
@@ -177,11 +182,15 @@ describe("commands module (registration)", () => {
     expect(cmds).toContain("hopper.ledger")
   })
 
-  test("ledger opens the panel", () => {
+  test("ledger toggles: opens when closed, closes when already open", () => {
     const c = commandsCtx()
     registerCommands(c.ctx as never)
-    commandsOf(c).find((cmd) => cmd.id === "hopper.ledger")!.run()
+    const ledger = commandsOf(c).find((cmd) => cmd.id === "hopper.ledger")!
+    ledger.run()
     expect(c.calls).toContainEqual({ method: "panel.open", input: "hopper.ledger" })
+    ledger.run() // panel now open → this run closes it
+    expect(c.calls).toContainEqual({ method: "panel.close", input: undefined })
+    expect(c.calls.filter((call) => call.method === "panel.open")).toHaveLength(1)
   })
 
   test("pwn: prompts target, confirms replacement, creates, toasts, submits kickoff", async () => {
