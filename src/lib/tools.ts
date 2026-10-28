@@ -97,16 +97,26 @@ export async function request(
   let response: Response | null = null
 
   for (let hop = 0; hop <= MAX_HOPS; hop++) {
-    // Dialog-always: re-load scope every hop. An out-of-scope hop asks the
-    // operator (allow once / always / deny); no confirm wired → proceed.
-    const scope = loadScope(configDir)
-    const violations = scopeViolations(scope, [new URL(currentUrl).hostname])
-    if (violations.length > 0 && handlers.confirm) {
-      await handlers.confirm(
-        violations,
-        `redirect hop → ${violations.join(", ")} is outside the operation scope`,
-        handlers.context,
-      )
+    // Dialog-always on redirect hops only — hop 0 is the initial target the
+    // execute.before hook already owns. Unreadable scope behaves like no
+    // scope: ask, never block.
+    if (hop > 0) {
+      let scope: ReturnType<typeof loadScope> = null
+      try {
+        scope = loadScope(configDir)
+      } catch {
+        scope = null
+      }
+      const violations = scopeViolations(scope, [new URL(currentUrl).hostname])
+      if (violations.length > 0 && handlers.confirm) {
+        await handlers.confirm(
+          violations,
+          scope === null
+            ? `redirect hop → ${violations.join(", ")} — no active operation scope`
+            : `redirect hop → ${violations.join(", ")} is outside the operation scope`,
+          handlers.context,
+        )
+      }
     }
 
     response = await doFetch(currentUrl, {

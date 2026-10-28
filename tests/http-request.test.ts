@@ -1,9 +1,9 @@
 import { describe, expect, test, beforeAll, afterAll } from "bun:test"
-import { mkdirSync, rmSync } from "node:fs"
+import { mkdirSync, rmSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { tmpdir } from "node:os"
 import { request } from "../src/lib/tools"
-import { saveScope } from "../src/lib/scope"
+import { saveScope, ScopeError } from "../src/lib/scope"
 
 let configDir: string
 let emptyDir: string
@@ -110,8 +110,7 @@ describe("http-request dialog-always behavior", () => {
     expect(res.body).toBe("metadata")
   })
 
-  test("sensitive response headers are redacted in the echo", async () => {
-    const res = await request(
+  test("sensitive response headers are redacted in the echo", async () => {    const res = await request(
       configDir,
       {
         url: "https://sub.example.test/auth",
@@ -127,5 +126,62 @@ describe("http-request dialog-always behavior", () => {
     expect(JSON.stringify(res.headers)).not.toContain("sekrit")
     expect(JSON.stringify(res.headers)).not.toContain("session=abc")
     expect(res.headers["x-custom"]).toBe("keep")
+  })
+
+  test("out-of-scope INITIAL url never confirms inside the tool (the hook owns hop 0)", async () => {
+    let confirmed = 0
+    const res = await request(configDir, { url: "https://scanme.nmap.org/" }, {
+      fetch: async () => ok("direct"),
+      confirm: async () => {
+        confirmed++
+      },
+    })
+    expect(confirmed).toBe(0)
+    expect(res.body).toBe("direct")
+  })
+})
+
+describe("corrupt scope.json (RF#1 - never hard-block)", () => {
+  let corruptDir: string
+
+  beforeAll(() => {
+    corruptDir = join(tmpdir(), "hopper-t6-corrupt")
+    rmSync(corruptDir, { recursive: true, force: true })
+    mkdirSync(corruptDir, { recursive: true })
+    writeFileSync(join(corruptDir, "scope.json"), "{corrupt")
+  })
+  afterAll(() => {
+    rmSync(corruptDir, { recursive: true, force: true })
+  })
+
+  test("redirect hop dialogs with the no-scope reason and proceeds on allow - never ScopeError", async () => {
+    const confirms: Array<[string[], string]> = []
+    let n = 0
+    const res = await request(corruptDir, { url: "https://a.example.test/" }, {
+      fetch: async () => {
+        n++
+        return n === 1 ? ok(null, { status: 302, headers: { location: "https://b.test/x" } }) : ok("landed")
+      },
+      confirm: async (v, r) => {
+        confirms.push([v, r])
+      },
+    })
+    expect(confirms).toEqual([[["b.test"], expect.stringContaining("no active operation scope")]])
+    expect(res.body).toBe("landed")
+  })
+
+  test("operator deny rejects with the denial - not a ScopeError", async () => {
+    let n = 0
+    const rejection = request(corruptDir, { url: "https://a.example.test/" }, {
+      fetch: async () => {
+        n++
+        return n === 1 ? ok(null, { status: 302, headers: { location: "https://b.test/x" } }) : ok("never")
+      },
+      confirm: async () => {
+        throw new Error("denied by operator")
+      },
+    })
+    await expect(rejection).rejects.toThrow("denied by operator")
+    await expect(rejection).rejects.not.toBeInstanceOf(ScopeError)
   })
 })
