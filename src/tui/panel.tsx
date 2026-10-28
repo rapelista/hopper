@@ -2,6 +2,7 @@ import { createSignal, For, Show } from "solid-js"
 import { Hopper, type FindingSummary, type OperationStatusResult } from "../rpc"
 import { LIFECYCLE, cycleStatus, severityToken, statusInitial, severityShort } from "./format"
 import { resolveToken, resolveActiveBackground, type HopperTheme } from "./theme"
+import { ledgerTab } from "./ledger-tab"
 import type { HopperRpcClient } from "./status"
 
 /**
@@ -32,7 +33,10 @@ export function buildPanelModel(status: OperationStatusResult | null, findings: 
 }
 
 export interface PanelCtx {
-  ui: { slot: (spec: { append: string; render: (input: { name?: string }) => unknown }) => () => void }
+  ui: {
+    slot: (spec: { append: string; render: (input: { name?: string; close?: () => void }) => unknown }) => () => void
+    panel?: { open: (name: string) => boolean; close: () => void }
+  }
   client: { rpc: (def: unknown) => HopperRpcClient & { findings: (input: { operationId?: string }, options?: { location?: unknown }) => Promise<{ items: FindingSummary[] }> } }
   keymap?: { layer: (layer: unknown) => () => void }
   theme?: HopperTheme
@@ -59,24 +63,27 @@ export function registerPanel(ctx: PanelCtx): { cleanup: () => void; model: () =
     rpc.events.on("finding.changed", () => void refresh()),
     ctx.ui.slot({
       append: "session.panel",
-      render: (panel: { name?: string }) =>
-        panel.name === "hopper.ledger" ? <LedgerPanel ctx={ctx} model={model} /> : null,
+      render: (panel: { name?: string; close?: () => void }) =>
+        panel.name === "hopper.ledger" ? <LedgerPanel ctx={ctx} model={model} close={panel.close} /> : null,
     }),
   ]
 
   return { model, cleanup: () => stops.forEach((stop) => stop()) }
 }
 
-function LedgerPanel(props: { ctx: PanelCtx; model: () => PanelModel }) {
+function LedgerPanel(props: { ctx: PanelCtx; model: () => PanelModel; close?: () => void }) {
   const theme = props.ctx.theme
   const base = resolveToken(theme, "base")
   const muted = resolveToken(theme, "muted")
   const activeBg = resolveActiveBackground(theme)
-  const [tab, setTab] = createSignal<string>("candidate")
+  const tab = ledgerTab.get
+  const setTab = ledgerTab.set
+  const close = () => (props.close ? props.close() : props.ctx.ui.panel?.close())
 
   // Panel-scoped keymap: created in the component, disposed with it (diff-viewer idiom)
   props.ctx.keymap?.layer(() => ({
     commands: [
+      { id: "hopper.ledger.close", bind: "escape", title: "Close the ledger", run: close },
       { id: "hopper.ledger.tab.next", bind: "right", title: "Next lifecycle tab", run: () => setTab((t) => cycleStatus(t, 1)) },
       { id: "hopper.ledger.tab.prev", bind: "left", title: "Previous lifecycle tab", run: () => setTab((t) => cycleStatus(t, -1)) },
       ...LIFECYCLE.map((status, i) => ({

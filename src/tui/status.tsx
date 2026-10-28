@@ -2,6 +2,7 @@ import { createSignal, For, Show } from "solid-js"
 import { Hopper, type OperationStatusResult } from "../rpc"
 import { bannerText, LIFECYCLE } from "./format"
 import { currentSession } from "./current-session"
+import { ledgerTab } from "./ledger-tab"
 import { resolveToken, type HopperTheme } from "./theme"
 
 /**
@@ -17,7 +18,10 @@ export interface HopperRpcClient {
 }
 
 export interface StatusCtx {
-  ui: { slot: (spec: { append: string; render: (input?: { sessionID?: string }) => unknown }) => () => void }
+  ui: {
+    slot: (spec: { append: string; render: (input?: { sessionID?: string }) => unknown }) => () => void
+    panel?: { open: (name: string) => boolean }
+  }
   client: { rpc: (def: unknown) => HopperRpcClient }
   data: { on: (name: string, cb: (event: { data: unknown }) => void) => () => void }
   storage?: { store: <T>(key: string, opts: { initial: T }) => [T, (fn: (draft: T) => T | void) => Promise<void>] }
@@ -106,7 +110,15 @@ export function registerStatus(ctx: StatusCtx): { cleanup: () => void; status: (
         <Show when={ledgerView.get().open}>
           <For each={LIFECYCLE}>
             {(lifecycle) => (
-              <box flexDirection="row" gap={1}>
+              <box
+                flexDirection="row"
+                gap={1}
+                onMouseDown={() => {
+                  // aim the ledger panel at this lifecycle, then open it
+                  ledgerTab.set(lifecycle)
+                  ctx.ui.panel?.open("hopper.ledger")
+                }}
+              >
                 <text fg={base} flexGrow={1} wrapMode="none" truncate>
                   {lifecycle[0]!.toUpperCase() + lifecycle.slice(1)}
                 </text>
