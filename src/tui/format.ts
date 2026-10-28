@@ -30,6 +30,13 @@ export function compactCounts(c: FindingsCounts): string {
     .join("/")
 }
 
+const STATUS_INITIAL: Record<string, string> = { candidate: "C", observed: "O", verified: "V", reportable: "R", rejected: "X", stale: "S" }
+
+/** Panel tab initial — rejected takes X so it never collides with reportable. */
+export function statusInitial(status: string): string {
+  return STATUS_INITIAL[status] ?? (status[0]?.toUpperCase() || "?")
+}
+
 /** The operation banner: `hop · <name> → <target> · <opsec>` (+ counts when any exist). */
 export function bannerText(m: {
   operation: OperationStatusResult["operation"]

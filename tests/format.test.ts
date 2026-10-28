@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { bannerText, compactCounts, groupFindings, severityToken, defaultOperationName } from "../src/tui/format"
+import { bannerText, compactCounts, groupFindings, severityToken, defaultOperationName, statusInitial } from "../src/tui/format"
 import type { FindingsCounts, FindingSummary, OperationSummary } from "../src/rpc"
 
 const counts = (over: Partial<FindingsCounts> = {}): FindingsCounts => ({
@@ -74,6 +74,20 @@ describe("groupFindings", () => {
   })
   test("empty input → no groups", () => {
     expect(groupFindings([])).toEqual([])
+  })
+})
+
+describe("statusInitial", () => {
+  test("C O V R X S — rejected takes X so it never collides with reportable", () => {
+    expect(statusInitial("candidate")).toBe("C")
+    expect(statusInitial("observed")).toBe("O")
+    expect(statusInitial("verified")).toBe("V")
+    expect(statusInitial("reportable")).toBe("R")
+    expect(statusInitial("rejected")).toBe("X")
+    expect(statusInitial("stale")).toBe("S")
+  })
+  test("unknown status falls back to its first letter uppercased", () => {
+    expect(statusInitial("weird")).toBe("W")
   })
 })
 

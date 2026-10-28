@@ -1,6 +1,6 @@
 import { createSignal, For, Show } from "solid-js"
 import { Hopper, type FindingSummary, type OperationStatusResult } from "../rpc"
-import { LIFECYCLE, cycleStatus, severityToken } from "./format"
+import { LIFECYCLE, cycleStatus, severityToken, statusInitial } from "./format"
 import { resolveToken, type HopperTheme } from "./theme"
 import type { HopperRpcClient } from "./status"
 
@@ -93,8 +93,8 @@ function LedgerPanel(props: { ctx: PanelCtx; model: () => PanelModel }) {
     <box flexDirection="row" gap={1} flexShrink={0}>
       <For each={LIFECYCLE}>
         {(status) => (
-          <text fg={status === tab() ? base : muted} wrapMode="none" truncate onMouseDown={() => setTab(status)}>
-            {`${status === tab() ? "[" : " "}${status[0]!.toUpperCase() + status.slice(1)} ${props.model().byStatus[status]!.length}${status === tab() ? "]" : " "}`}
+          <text fg={status === tab() ? base : muted} wrapMode="none" flexShrink={0} onMouseDown={() => setTab(status)}>
+            {`[${statusInitial(status)}${props.model().byStatus[status]!.length}]`}
           </text>
         )}
       </For>
@@ -103,9 +103,14 @@ function LedgerPanel(props: { ctx: PanelCtx; model: () => PanelModel }) {
 
   return (
     <box flexDirection="column" width="100%" height="100%" paddingTop={1} paddingBottom={1} paddingLeft={2} paddingRight={2}>
-      <text fg={base}>
-        <b>Ledger</b>
-      </text>
+      <box flexDirection="row" gap={1}>
+        <text fg={base} flexGrow={1} wrapMode="none" truncate>
+          <b>Ledger</b>
+        </text>
+        <text fg={muted} wrapMode="none" flexShrink={0}>
+          {tab()[0]!.toUpperCase() + tab().slice(1)}
+        </text>
+      </box>
       <text> </text>
       {tabBar}
       <Show
