@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { queryOsv, OsvError, buildTools, type VulnInfo } from "../.opencode/lib/tools"
+import { queryOsv, OsvError, buildTools, type VulnInfo } from "../src/lib/tools"
 
 const osvPackageResponse = {
   vulns: [

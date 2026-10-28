@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { TOOLS, checkTools, buildTools, type DoctorReport } from "../.opencode/lib/tools"
+import { TOOLS, checkTools, buildTools, type DoctorReport } from "../src/lib/tools"
 
 describe("checkTools", () => {
   test("partitions available and missing binaries", () => {

@@ -2,9 +2,9 @@ import { describe, expect, test, beforeAll, afterAll } from "bun:test"
 import { mkdirSync, rmSync } from "node:fs"
 import { join } from "node:path"
 import { tmpdir } from "node:os"
-import { sha256Hex, captureEvidence, verifyEvidence } from "../.opencode/lib/evidence"
-import { HopperStore } from "../.opencode/lib/store"
-import { buildTools } from "../.opencode/lib/tools"
+import { sha256Hex, captureEvidence, verifyEvidence } from "../src/lib/evidence"
+import { HopperStore } from "../src/lib/store"
+import { buildTools } from "../src/lib/tools"
 
 let configDir: string
 let store: HopperStore

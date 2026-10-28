@@ -2,8 +2,8 @@ import { describe, expect, test, beforeAll, afterAll } from "bun:test"
 import { mkdirSync, rmSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { tmpdir } from "node:os"
-import { buildCommand, runScan, COMMON_WORDLIST, buildTools } from "../.opencode/lib/tools"
-import { saveScope, ScopeError } from "../.opencode/lib/scope"
+import { buildCommand, runScan, COMMON_WORDLIST, buildTools } from "../src/lib/tools"
+import { saveScope, ScopeError } from "../src/lib/scope"
 
 let configDir: string
 let emptyDir: string

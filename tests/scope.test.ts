@@ -8,7 +8,7 @@ import {
   loadScope,
   saveScope,
   type Scope,
-} from "../.opencode/lib/scope"
+} from "../src/lib/scope"
 
 const scope = (targets: string[]): Scope => ({ targets, strict: true, created: "2026-10-28T00:00:00Z" })
 

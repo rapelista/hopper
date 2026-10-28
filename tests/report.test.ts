@@ -2,10 +2,10 @@ import { describe, expect, test, beforeAll, afterAll } from "bun:test"
 import { mkdirSync, rmSync, existsSync, readFileSync } from "node:fs"
 import { join } from "node:path"
 import { tmpdir } from "node:os"
-import { HopperStore } from "../.opencode/lib/store"
-import { renderReportMarkdown, writeReport } from "../.opencode/lib/report"
-import { captureEvidence } from "../.opencode/lib/evidence"
-import { buildTools } from "../.opencode/lib/tools"
+import { HopperStore } from "../src/lib/store"
+import { renderReportMarkdown, writeReport } from "../src/lib/report"
+import { captureEvidence } from "../src/lib/evidence"
+import { buildTools } from "../src/lib/tools"
 
 let configDir: string
 let store: HopperStore

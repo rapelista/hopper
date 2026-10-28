@@ -2,9 +2,9 @@ import { describe, expect, test, beforeAll, afterAll } from "bun:test"
 import { mkdirSync, rmSync } from "node:fs"
 import { join } from "node:path"
 import { tmpdir } from "node:os"
-import { request } from "../.opencode/lib/tools"
-import { saveScope } from "../.opencode/lib/scope"
-import { ScopeError } from "../.opencode/lib/scope"
+import { request } from "../src/lib/tools"
+import { saveScope } from "../src/lib/scope"
+import { ScopeError } from "../src/lib/scope"
 
 let configDir: string
 let emptyDir: string

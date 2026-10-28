@@ -8,5 +8,5 @@
     "noEmit": true,
     "types": ["@types/bun"]
   },
-  "include": [".opencode/**/*.ts", "tests/**/*.ts"]
+  "include": ["src/**/*.ts", "tests/**/*.ts"]
 }

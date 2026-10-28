@@ -1,16 +1,16 @@
 import { Plugin, Skill } from "@opencode/plugin"
 import { existsSync, readdirSync, readFileSync } from "node:fs"
 import { join } from "node:path"
-import { bashScopeGuard } from "../lib/guard"
-import { buildTools } from "../lib/tools"
-import { loadScope, checkUrl } from "../lib/scope"
-import { HopperStore } from "../lib/store"
+import { bashScopeGuard } from "./lib/guard"
+import { buildTools } from "./lib/tools"
+import { loadScope, checkUrl } from "./lib/scope"
+import { HopperStore } from "./lib/store"
 
-export { bashScopeGuard } from "../lib/guard"
-export { buildTools } from "../lib/tools"
+export { bashScopeGuard } from "./lib/guard"
+export { buildTools } from "./lib/tools"
 
-/** Repo root = two levels up from this file (.opencode/plugins/kernel.ts). */
-const repoRoot = join(import.meta.dir, "..", "..")
+/** Repo root = one level up from this file (src/index.ts). */
+const repoRoot = join(import.meta.dir, "..")
 
 interface BundledSkill {
   id: string

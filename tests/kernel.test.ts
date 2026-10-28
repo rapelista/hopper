@@ -2,8 +2,8 @@ import { describe, expect, test, beforeAll, afterAll } from "bun:test"
 import { mkdirSync, rmSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { tmpdir } from "node:os"
-import hopperPlugin, { bashScopeGuard, buildTools } from "../.opencode/plugins/kernel"
-import type { Scope } from "../.opencode/lib/scope"
+import hopperPlugin, { bashScopeGuard, buildTools } from "../src/index"
+import type { Scope } from "../src/lib/scope"
 
 const scope = (targets: string[]): Scope => ({ targets, strict: true, created: "x" })
 

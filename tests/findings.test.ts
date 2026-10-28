@@ -2,9 +2,9 @@ import { describe, expect, test, beforeAll, afterAll } from "bun:test"
 import { mkdirSync, rmSync } from "node:fs"
 import { join } from "node:path"
 import { tmpdir } from "node:os"
-import { TRANSITIONS, canTransition, assertTransition, FindingError, type FindingStatus } from "../.opencode/lib/findings"
-import { HopperStore } from "../.opencode/lib/store"
-import { buildTools } from "../.opencode/lib/tools"
+import { TRANSITIONS, canTransition, assertTransition, FindingError, type FindingStatus } from "../src/lib/findings"
+import { HopperStore } from "../src/lib/store"
+import { buildTools } from "../src/lib/tools"
 
 let configDir: string
 let store: HopperStore

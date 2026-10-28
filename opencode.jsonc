@@ -2,6 +2,9 @@
   "$schema": "https://opencode.ai/config.json",
   // Hopper permission preset: default-deny posture.
   // Active tooling lives in agent-specific permission overrides (see .opencode/agents/).
+  // The kernel plugin lives in src/ (package exports) — registered explicitly so
+  // self-hosting in this repo works without a .opencode/plugins/ directory.
+  "plugins": ["."],
   "permission": {
     "bash": {
       "*": "ask",
