@@ -2,7 +2,6 @@ import { createSignal, For, Show } from "solid-js"
 import { Hopper, type OperationStatusResult } from "../rpc"
 import { bannerText, LIFECYCLE } from "./format"
 import { currentSession } from "./current-session"
-import { ledgerTab } from "./ledger-tab"
 import { resolveToken, type HopperTheme } from "./theme"
 
 /**
@@ -114,8 +113,13 @@ export function registerStatus(ctx: StatusCtx): { cleanup: () => void; status: (
                 flexDirection="row"
                 gap={1}
                 onMouseDown={() => {
-                  // aim the ledger panel at this lifecycle, then open it
-                  ledgerTab.set(lifecycle)
+                  // aim the ledger panel at this lifecycle, then open it —
+                  // same host-storage key the panel reads (plugin.hopper-tui.ledgerTab)
+                  void ctx.storage
+                    ?.store<{ status: string }>("ledgerTab", { initial: { status: "candidate" } })[1]((draft) => {
+                      draft.status = lifecycle
+                    })
+                    .catch(() => {})
                   ctx.ui.panel?.open("hopper.ledger")
                 }}
               >

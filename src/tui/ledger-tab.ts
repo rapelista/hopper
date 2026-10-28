@@ -1,17 +1,20 @@
-import { createSignal } from "solid-js"
-
 /**
- * The ledger's selected lifecycle tab, shared so the sidebar rows can aim the
- * panel at a status before opening it. Module-level signal — one tab state per
- * plugin instance (hot-reload resets it harmlessly).
+ * The ledger's selected lifecycle tab, stored in the HOST's plugin storage
+ * (key: plugin.hopper-tui.ledgerTab). Host storage is the one state mechanism
+ * proven to update plugin UI in this TUI (the sidebar collapse uses it, as
+ * does upstream's MCP view state) — and it syncs across TUI instances.
+ * Both the sidebar (aim + open) and the panel read/write the same key.
  */
-const [tab, setTab] = createSignal<string>("candidate")
+export const LEDGER_TAB_KEY = "ledgerTab"
 
-export const ledgerTab = {
-  get: tab,
-  set: setTab,
-  /** test isolation */
-  reset(): void {
-    setTab("candidate")
-  },
+export interface LedgerTabState {
+  status: string
+}
+
+export interface StorageLike {
+  store: <T>(key: string, opts: { initial: T }) => [T, (fn: (draft: T) => T | void) => Promise<void>]
+}
+
+export function ledgerTabStore(storage: StorageLike) {
+  return storage.store<LedgerTabState>(LEDGER_TAB_KEY, { initial: { status: "candidate" } })
 }
