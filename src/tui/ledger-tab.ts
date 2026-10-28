@@ -1,4 +1,4 @@
-import { createSignal } from "./solid"
+import { createSignal } from "solid-js"
 
 /**
  * The ledger's selected lifecycle tab, shared so the sidebar rows can aim the

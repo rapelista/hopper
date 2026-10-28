@@ -1,4 +1,4 @@
-import { createSignal, For, Show } from "./solid"
+import { createSignal, For, Show } from "solid-js"
 import { Hopper, type FindingSummary, type OperationStatusResult } from "../rpc"
 import { LIFECYCLE, cycleStatus, severityToken, statusInitial, severityShort } from "./format"
 import { resolveToken, resolveActiveBackground, type HopperTheme } from "./theme"

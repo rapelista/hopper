@@ -9,7 +9,8 @@
   },
   "scripts": {
     "test": "bun test",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "postinstall": "node ./scripts/patch-solid.mjs"
   },
   "dependencies": {
     "@opencode/plugin": "^2.2.0"

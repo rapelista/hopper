@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import { ledgerTab } from "../src/tui/ledger-tab"
-import { createRoot, createMemo } from "../src/tui/solid"
+import { createRoot, createMemo } from "solid-js"
 
 describe("shared ledger tab signal (cross-module, client solid build)", () => {
   test("memo recomputes on set — the server-build regression pin", () => {
