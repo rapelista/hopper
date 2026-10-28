@@ -1,7 +1,7 @@
 import { createSignal, For, Show } from "solid-js"
 import { Hopper, type FindingSummary, type OperationStatusResult } from "../rpc"
 import { LIFECYCLE, cycleStatus, severityToken, statusInitial } from "./format"
-import { resolveToken, type HopperTheme } from "./theme"
+import { resolveToken, resolveActiveBackground, type HopperTheme } from "./theme"
 import type { HopperRpcClient } from "./status"
 
 /**
@@ -71,6 +71,7 @@ function LedgerPanel(props: { ctx: PanelCtx; model: () => PanelModel }) {
   const theme = props.ctx.theme
   const base = resolveToken(theme, "base")
   const muted = resolveToken(theme, "muted")
+  const activeBg = resolveActiveBackground(theme)
   const [tab, setTab] = createSignal<string>("candidate")
 
   // Panel-scoped keymap: created in the component, disposed with it (diff-viewer idiom)
@@ -92,11 +93,22 @@ function LedgerPanel(props: { ctx: PanelCtx; model: () => PanelModel }) {
   const tabBar = (
     <box flexDirection="row" gap={1} flexShrink={0}>
       <For each={LIFECYCLE}>
-        {(status) => (
-          <text fg={status === tab() ? base : muted} wrapMode="none" flexShrink={0} onMouseDown={() => setTab(status)}>
-            {`[${statusInitial(status)}${props.model().byStatus[status]!.length}]`}
-          </text>
-        )}
+        {(status) => {
+          const active = status === tab()
+          return (
+            <box
+              paddingLeft={1}
+              paddingRight={1}
+              flexShrink={0}
+              backgroundColor={active ? activeBg : undefined}
+              onMouseDown={() => setTab(status)}
+            >
+              <text fg={active ? base : muted} wrapMode="none">
+                {`${statusInitial(status)}${props.model().byStatus[status]!.length}`}
+              </text>
+            </box>
+          )
+        }}
       </For>
     </box>
   )

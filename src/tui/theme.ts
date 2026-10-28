@@ -9,6 +9,10 @@ export interface HopperTheme {
       success?: { base?: string }
     }
   }
+  background?: {
+    raised?: { high?: string; default?: string }
+    action?: { primary?: { focused?: string } }
+  }
 }
 
 export type SemanticToken = "error" | "warning" | "base" | "muted"
@@ -20,4 +24,9 @@ export function resolveToken(theme: HopperTheme | undefined, token: SemanticToke
   if (token === "warning") return theme.text.feedback?.warning?.base ?? ""
   if (token === "base") return theme.text.base ?? ""
   return theme.text.muted ?? ""
+}
+
+/** The active-selection background (dialog selected-row idiom); "" when absent. */
+export function resolveActiveBackground(theme: HopperTheme | undefined): string {
+  return theme?.background?.action?.primary?.focused ?? theme?.background?.raised?.high ?? ""
 }
