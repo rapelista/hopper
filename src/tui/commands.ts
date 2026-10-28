@@ -61,7 +61,7 @@ export function registerCommands(ctx: CommandsCtx): { cleanup: () => void } {
       if (!t) return // cancelled
     }
     const name = defaultOperationName(t)
-    const status = await rpc.operationStatus().catch(() => null)
+    const status = await rpc.operationStatus({}).catch(() => null)
     if (status?.operation) {
       const replace = await ctx.ui.dialog.confirm({
         title: "Replace active operation?",
@@ -73,7 +73,12 @@ export function registerCommands(ctx: CommandsCtx): { cleanup: () => void } {
     try {
       created = await rpc.createOperation({ name, target: t })
     } catch (err) {
-      ctx.ui.toast.show({ title: "Hopper", message: `createOperation failed: ${String(err)}`, variant: "error" })
+      console.error("[hopper-tui] createOperation failed:", err)
+      ctx.ui.toast.show({
+        title: "Hopper",
+        message: `createOperation failed: ${JSON.stringify(err)}`,
+        variant: "error",
+      })
       return
     }
     ctx.ui.toast.show({
@@ -93,7 +98,7 @@ export function registerCommands(ctx: CommandsCtx): { cleanup: () => void } {
   }
 
   const runOpsec = async () => {
-    const status = await rpc.operationStatus().catch(() => null)
+    const status = await rpc.operationStatus({}).catch(() => null)
     const picked = await ctx.ui.dialog.select({
       title: "Opsec posture",
       current: status?.opsec ?? "normal",
@@ -111,7 +116,8 @@ export function registerCommands(ctx: CommandsCtx): { cleanup: () => void } {
       }
       ctx.ui.toast.show({ title: "Hopper", message: `opsec: ${picked}`, variant: "success" })
     } catch (err) {
-      ctx.ui.toast.show({ title: "Hopper", message: `setOpsec failed: ${String(err)}`, variant: "error" })
+      console.error("[hopper-tui] setOpsec failed:", err)
+      ctx.ui.toast.show({ title: "Hopper", message: `setOpsec failed: ${JSON.stringify(err)}`, variant: "error" })
     }
   }
 

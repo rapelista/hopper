@@ -35,10 +35,10 @@ export function registerPanel(ctx: PanelCtx): { cleanup: () => void; model: () =
 
   const refresh = async () => {
     try {
-      const [status, findings] = await Promise.all([rpc.operationStatus(), rpc.findings({})])
+      const [status, findings] = await Promise.all([rpc.operationStatus({}), rpc.findings({})])
       setModel(buildPanelModel(status, findings.items))
-    } catch {
-      // unreachable server — keep the last known ledger
+    } catch (err) {
+      console.error("[hopper-tui] panel refresh failed:", err)
     }
   }
   void refresh()

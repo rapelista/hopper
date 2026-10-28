@@ -9,7 +9,7 @@ import { bannerText } from "./format"
  */
 
 export interface HopperRpcClient {
-  operationStatus: () => Promise<OperationStatusResult>
+  operationStatus: (input: unknown) => Promise<OperationStatusResult>
   findings?: (input: { operationId?: string }) => Promise<{ items: import("../rpc").FindingSummary[] }>
   events: { on: (name: string, cb: (event: { data: unknown }) => void) => () => void }
 }
@@ -27,9 +27,10 @@ export function registerStatus(ctx: StatusCtx): { cleanup: () => void; status: (
 
   const refresh = async () => {
     try {
-      setStatus(await rpc.operationStatus())
-    } catch {
-      // unreachable server — keep the last known state, never break the footer
+      setStatus(await rpc.operationStatus({}))
+    } catch (err) {
+      // unreachable server / invalid call — keep the last known state, but leave a trace
+      console.error("[hopper-tui] operationStatus failed:", err)
     }
   }
   void refresh()
