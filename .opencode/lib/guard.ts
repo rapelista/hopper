@@ -78,13 +78,23 @@ function extractTargets(command: string): Extracted {
     work = work.split(m[0]).join(" ")
   }
 
-  for (const m of work.matchAll(IPV4_RE)) ips.push(m[1]!)
+  // A token immediately preceded by "/" is a path segment, never a host:
+  // hostnames cannot contain "/", so `ftp/eastere.gg`, `./encrypt.pyc`, or
+  // `conf/8.8.8.8` are filenames in an argument list or shell loop, not targets.
+  const isPathSegment = (idx: number) => idx > 0 && work[idx - 1] === "/"
+
+  for (const m of work.matchAll(IPV4_RE)) {
+    if (isPathSegment(m.index)) continue
+    ips.push(m[1]!)
+  }
   for (const m of work.matchAll(BARE_INT_RE)) {
+    if (isPathSegment(m.index)) continue
     const v = parseIpToken(m[0])
     if (v !== null) ips.push(ipToString(v))
   }
 
   for (const m of work.matchAll(DOMAIN_RE)) {
+    if (isPathSegment(m.index)) continue
     const token = m[1]!
     if (FILE_EXT_RE.test(token)) continue
     if (/^\d/.test(token)) continue

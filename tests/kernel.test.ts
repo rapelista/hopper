@@ -76,6 +76,29 @@ describe("bashScopeGuard", () => {
   test("in-scope dotted IPv4 still passes", () => {
     expect(bashScopeGuard(scope(["10.0.0.0/8"]), "nmap 10.1.2.3").ok).toBe(true)
   })
+
+  test("relative path segments in shell loops are not hosts (juice-shop repro)", () => {
+    const sc = scope(["localhost"])
+    const repro =
+      'for p in ftp/ ftp/acquisitions.md ftp/eastere.gg ftp/quotations.md ftp/suspicious_errors.yml ftp/encrypt.pyc ftp/package.json.bak api-docs/ rest/admin/application-version rest/products/search?q= snippets; do code=$(curl -s -o /dev/null -w "%{http_code} %{size_download}" "http://localhost:3000/$p"); echo "$code  /$p"; done'
+    expect(bashScopeGuard(sc, repro).ok).toBe(true)
+  })
+
+  test("dot-slash path segments are not hosts", () => {
+    expect(bashScopeGuard(scope(["localhost"]), "cat ./eastere.gg && curl http://localhost:3000/").ok).toBe(true)
+    expect(bashScopeGuard(scope(["localhost"]), "grep x ../assets/encrypt.pyc").ok).toBe(true)
+  })
+
+  test("path-embedded IPs are not hosts", () => {
+    expect(bashScopeGuard(scope(["localhost"]), "curl -o data/2852039166 http://localhost:3000/").ok).toBe(true)
+    expect(bashScopeGuard(scope(["localhost"]), "sha256sum conf/8.8.8.8").ok).toBe(true)
+  })
+
+  test("space-position hosts still blocked (regression)", () => {
+    expect(bashScopeGuard(scope(["example.test"]), "nmap -p 1-100 scanme.nmap.org").ok).toBe(false)
+    expect(bashScopeGuard(scope(["example.test"]), "host 203.0.113.9").ok).toBe(false)
+    expect(bashScopeGuard(scope(["example.test"]), "curl http://2852039166/").ok).toBe(false)
+  })
 })
 
 /** Minimal v2 plugin-context mock capturing registrations. */
