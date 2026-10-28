@@ -86,3 +86,13 @@ export function defaultOperationName(target: string): string {
   const first = host.split(".")[0]!
   return first === "" ? host : first
 }
+
+/** Toast-safe error rendering: Error → message, rpc failure → message field, else JSON. */
+export function errText(err: unknown): string {
+  if (err instanceof Error) return err.message
+  if (typeof err === "object" && err !== null) {
+    const msg = (err as { message?: unknown }).message
+    if (typeof msg === "string") return msg
+  }
+  return JSON.stringify(err)
+}

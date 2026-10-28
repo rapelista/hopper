@@ -5,7 +5,11 @@
  */
 
 export interface NotificationsCtx {
-  data: { on: (name: string, cb: (event: { data: unknown }) => void) => () => void }
+  data: {
+    on: (name: string, cb: (event: { data: unknown }) => void) => () => void
+    /** present in the host — names the session in the notification */
+    session?: { get: (sessionID: string) => { title?: string } | undefined }
+  }
   attention: { notify: (i: unknown) => Promise<unknown> }
 }
 
@@ -32,10 +36,11 @@ export function registerNotifications(
       startedAt.delete(id)
       if (t0 === undefined) return // orphan succeeded — nothing measured, never throw
       if (now() - t0 < threshold) return
+      const title = ctx.data.session?.get(id)?.title
       void ctx.attention
         .notify({
           title: "Hopper",
-          message: "engagement step",
+          message: title || "engagement step",
           notification: { when: "blurred" },
           sound: { name: "done", when: "never" },
         })

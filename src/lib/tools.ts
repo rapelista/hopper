@@ -1,4 +1,4 @@
-import { loadScope, scopeViolations } from "./scope"
+import { loadScope, scopeViolations, normalizeTarget } from "./scope"
 import { HopperStore } from "./store"
 import { captureEvidence } from "./evidence"
 import { writeReport } from "./report"
@@ -405,7 +405,7 @@ export function buildTools(
         try {
           if (input.action === "create") {
             if (!input.name || !input.target) return { content: "create needs both name and target." }
-            const op = store.createOperation(input.name, input.target)
+            const op = store.createOperation(input.name, normalizeTarget(input.target))
             try {
               notify?.({ type: "operation.changed", data: { operationId: op.id } })
             } catch {

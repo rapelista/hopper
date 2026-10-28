@@ -21,6 +21,7 @@ function statusCtx() {
   let fetches = 0
   const eventSubs: Record<string, Array<(e: { data: unknown }) => void>> = {}
   const slots: Array<{ append: string; render: () => unknown }> = []
+  const storeKeys: string[] = []
   const ctx = {
     ui: {
       slot: (spec: { append: string; render: () => unknown }) => {
@@ -52,8 +53,21 @@ function statusCtx() {
         }
       },
     },
+    // host-storage branch: records the key and mutates the draft in place,
+    // the same observable semantics the host's store tuple has
+    storage: {
+      store: <T,>(key: string, opts: { initial: T }): [T, (fn: (draft: T) => T | void) => Promise<void>] => {
+        storeKeys.push(key)
+        return [
+          opts.initial,
+          async (fn) => {
+            fn(opts.initial)
+          },
+        ]
+      },
+    },
   }
-  return { ctx, get fetches() { return fetches }, eventSubs, slots }
+  return { ctx, get fetches() { return fetches }, eventSubs, slots, storeKeys }
 }
 
 describe("status module", () => {
@@ -64,6 +78,8 @@ describe("status module", () => {
     expect(s.fetches).toBe(1)
     expect(reg.status()?.operation?.name).toBe("juice")
     expect(s.slots.map((x) => x.append).sort()).toEqual(["home.footer.status", "sidebar.content"])
+    // host-storage branch runs: the collapse state asks for its persisted key
+    expect(s.storeKeys).toContain("ledgerView")
     reg.cleanup()
   })
 
@@ -197,13 +213,14 @@ describe("commands module (registration)", () => {
   const commandsOf = (c: ReturnType<typeof commandsCtx>) =>
     c.layers[0]!.commands as Array<{ id: string; run: (input?: string) => unknown }>
 
-  test("registers pwn/opsec/ledger slash commands", () => {
+  test("registers pwn/opsec/ledger slash commands with slash names", () => {
     const c = commandsCtx()
     registerCommands(c.ctx as never)
-    const cmds = commandsOf(c).map((cmd) => cmd.id)
-    expect(cmds).toContain("hopper.pwn")
-    expect(cmds).toContain("hopper.opsec")
-    expect(cmds).toContain("hopper.ledger")
+    const cmds = commandsOf(c) as Array<{ id: string; slash?: { name: string } }>
+    expect(cmds.map((cmd) => cmd.id)).toContain("hopper.pwn")
+    expect(cmds.map((cmd) => cmd.id)).toContain("hopper.opsec")
+    expect(cmds.map((cmd) => cmd.id)).toContain("hopper.ledger")
+    expect(cmds.map((cmd) => cmd.slash?.name)).toEqual(["pwn", "opsec", "ledger"])
   })
 
   test("ledger toggles: opens when closed, closes when already open", () => {
@@ -242,6 +259,30 @@ describe("commands module (registration)", () => {
     expect(c.toasts.some((t) => JSON.stringify(t).includes("open a session"))).toBe(true)
   })
 
+  test("kickoff failure: operation stays created, warning toast lands, never crashes", async () => {
+    currentSession.reset()
+    const c = commandsCtx()
+    c.ctx.session.prompt = async () => {
+      throw new Error("session gone")
+    }
+    registerCommands(c.ctx as never)
+    c.subs["tui.session.select"]![0]!({ data: { sessionID: "s1" } })
+    const pwn = commandsOf(c).find((cmd) => cmd.id === "hopper.pwn")!
+    await pwn.run("example.test")
+    expect(c.calls).toContainEqual({ method: "createOperation", input: { name: "example", target: "example.test" } })
+    expect(c.toasts.some((t) => JSON.stringify(t).includes("kickoff prompt failed"))).toBe(true)
+  })
+
+  test("session.deleted clears the current-session holder", () => {
+    currentSession.reset()
+    const c = commandsCtx()
+    registerCommands(c.ctx as never)
+    c.subs["tui.session.select"]![0]!({ data: { sessionID: "s1" } })
+    expect(currentSession.get()).toBe("s1")
+    c.subs["session.deleted"]![0]!({ data: { sessionID: "s1" } })
+    expect(currentSession.get()).toBeUndefined()
+  })
+
   test("opsec runs the select dialog and sets the level", async () => {
     const c = commandsCtx()
     registerCommands(c.ctx as never)
@@ -255,7 +296,7 @@ describe("commands module (registration)", () => {
 // --------------------------------------------------------- notifications ----
 
 describe("notifications module", () => {
-  function notificationsCtx() {
+  function notificationsCtx(session?: { get: (sessionID: string) => { title?: string } | undefined }) {
     const subs: Record<string, Array<(e: { data: unknown }) => void>> = {}
     const notified: unknown[] = []
     const ctx = {
@@ -264,6 +305,7 @@ describe("notifications module", () => {
           ;(subs[name] ??= []).push(cb)
           return () => {}
         },
+        ...(session ? { session } : {}),
       },
       attention: { notify: async (i: unknown) => { notified.push(i); return { ok: true } } },
     }
@@ -296,6 +338,30 @@ describe("notifications module", () => {
     expect(() => fire(n, "session.execution.succeeded", "ghost")).not.toThrow()
     await settle()
     expect(n.notified.length).toBe(0)
+    reg.cleanup()
+  })
+
+  test("notification names the session when its title is known", async () => {
+    const n = notificationsCtx({ get: (id) => (id === "s1" ? { title: "Recon sweep" } : undefined) })
+    let t = 1_000_000
+    const reg = registerNotifications(n.ctx as never, { now: () => t })
+    fire(n, "session.execution.started", "s1")
+    t += 61_000
+    fire(n, "session.execution.succeeded", "s1")
+    await settle()
+    expect((n.notified[0] as { message: string }).message).toBe("Recon sweep")
+    reg.cleanup()
+  })
+
+  test("notification falls back to the generic message without session info", async () => {
+    const n = notificationsCtx() // no data.session in ctx
+    let t = 1_000_000
+    const reg = registerNotifications(n.ctx as never, { now: () => t })
+    fire(n, "session.execution.started", "s9")
+    t += 61_000
+    fire(n, "session.execution.succeeded", "s9")
+    await settle()
+    expect((n.notified[0] as { message: string }).message).toBe("engagement step")
     reg.cleanup()
   })
 })

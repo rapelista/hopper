@@ -1,5 +1,5 @@
 import { Hopper, type OperationSummary } from "../rpc"
-import { defaultOperationName } from "./format"
+import { defaultOperationName, errText } from "./format"
 import { currentSession } from "./current-session"
 import type { HopperRpcClient } from "./status"
 
@@ -59,6 +59,11 @@ export function registerCommands(ctx: CommandsCtx): { cleanup: () => void } {
     const data = event.data as { sessionID?: string } | undefined
     if (data?.sessionID) currentSession.set(data.sessionID)
   })
+  // a deleted session must never receive the kickoff prompt
+  const stopDelete = ctx.data.on("session.deleted", (event) => {
+    const data = event.data as { sessionID?: string } | undefined
+    if (data?.sessionID) currentSession.clear(data.sessionID)
+  })
 
   const runPwn = async (input?: string) => {
     const { target } = parsePwnArgument(input ?? "")
@@ -83,7 +88,7 @@ export function registerCommands(ctx: CommandsCtx): { cleanup: () => void } {
       console.error("[hopper-tui] createOperation failed:", err)
       ctx.ui.toast.show({
         title: "Hopper",
-        message: `createOperation failed: ${JSON.stringify(err)}`,
+        message: `createOperation failed: ${errText(err)}`,
         variant: "error",
       })
       return
@@ -102,7 +107,17 @@ export function registerCommands(ctx: CommandsCtx): { cleanup: () => void } {
       })
       return
     }
-    await ctx.session.prompt({ sessionID, text: buildKickoffPrompt(created.operation.name, created.operation.target) })
+    try {
+      await ctx.session.prompt({ sessionID, text: buildKickoffPrompt(created.operation.name, created.operation.target) })
+    } catch (err) {
+      // the operation IS active — only the automatic kickoff failed; say so, never crash
+      console.error("[hopper-tui] kickoff prompt failed:", err)
+      ctx.ui.toast.show({
+        title: "Hopper",
+        message: `Operation active, but the kickoff prompt failed: ${errText(err)} — ask for the plan manually`,
+        variant: "warning",
+      })
+    }
   }
 
   const runOpsec = async () => {
@@ -125,7 +140,7 @@ export function registerCommands(ctx: CommandsCtx): { cleanup: () => void } {
       ctx.ui.toast.show({ title: "Hopper", message: `opsec: ${picked}`, variant: "success" })
     } catch (err) {
       console.error("[hopper-tui] setOpsec failed:", err)
-      ctx.ui.toast.show({ title: "Hopper", message: `setOpsec failed: ${JSON.stringify(err)}`, variant: "error" })
+      ctx.ui.toast.show({ title: "Hopper", message: `setOpsec failed: ${errText(err)}`, variant: "error" })
     }
   }
 
@@ -150,7 +165,7 @@ export function registerCommands(ctx: CommandsCtx): { cleanup: () => void } {
       },
       {
         id: "hopper.ledger",
-        title: "Open the findings ledger",
+        title: "Toggle the findings ledger",
         slash: { name: "ledger" },
         palette: true,
         run: () => {
@@ -162,5 +177,5 @@ export function registerCommands(ctx: CommandsCtx): { cleanup: () => void } {
     ],
   }))
 
-  return { cleanup: () => { stopTrack() } }
+  return { cleanup: () => { stopTrack(); stopDelete() } }
 }

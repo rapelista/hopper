@@ -5,7 +5,7 @@ import { registerCommands, type CommandsCtx } from "./tui/commands"
 import { registerNotifications, type NotificationsCtx } from "./tui/notifications"
 
 /**
- * Hopper TUI part — the Hopper UX layer, built the way opencode v2 builds its
+ * Hopper TUI part — the operator surface, built the way opencode v2 builds its
  * own features: one focused module per surface, composed here, every
  * subscription and layer cleaned up on unload (hot-reload safe).
  */

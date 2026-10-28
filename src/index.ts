@@ -259,7 +259,8 @@ export default Plugin.define({
         const store = HopperStore.open(configDir)
         try {
           const op = store.createOperation(name, normalizeTarget(target))
-          await rpcReg.events.emit("operation.changed", { operationId: op.id })
+          // emit failure must not fail a mutation that landed
+          void rpcReg.events.emit("operation.changed", { operationId: op.id }).catch(() => {})
           return { operation: { id: op.id, name: op.name, target: op.target, createdAt: op.created_at } }
         } finally {
           store.close()
@@ -286,7 +287,8 @@ export default Plugin.define({
         } finally {
           store.close()
         }
-        await rpcReg.events.emit("operation.changed", { operationId })
+        // emit failure must not fail a mutation that landed
+        void rpcReg.events.emit("operation.changed", { operationId }).catch(() => {})
         return { opsec: level }
       },
     })

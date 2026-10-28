@@ -13,6 +13,10 @@ export const currentSession = {
   get(): string | undefined {
     return current
   },
+  /** a deleted session can never be a prompt target again */
+  clear(id?: string): void {
+    if (id === undefined || id === current) current = undefined
+  },
   /** test isolation — module-level state otherwise leaks between bun tests */
   reset(): void {
     current = undefined

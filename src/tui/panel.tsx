@@ -6,7 +6,7 @@ import type { HopperRpcClient } from "./status"
 
 /**
  * Surface 2 — the findings ledger panel, tabbed per lifecycle status.
- * Hopper: "The TUI is the ledger." Tab bar + list; left/right cycle,
+ * Guiding line: "The TUI is the ledger." Tab bar + list; left/right cycle,
  * 1–6 jump, click a tab to switch. The keymap layer is created inside the
  * component, so it lives and dies with the panel and only fires while the
  * panel owns input (diff-viewer idiom).
@@ -32,7 +32,7 @@ export function buildPanelModel(status: OperationStatusResult | null, findings: 
 }
 
 export interface PanelCtx {
-  ui: { slot: (spec: { append: string; render: (input: { name?: string }) => unknown }) => () => void }
+  ui: { slot: (spec: { append: string; render: (input: { name?: string; toggleFullscreen?: () => void }) => unknown }) => () => void }
   client: { rpc: (def: unknown) => HopperRpcClient & { findings: (input: { operationId?: string }, options?: { location?: unknown }) => Promise<{ items: FindingSummary[] }> } }
   keymap?: { layer: (layer: unknown) => () => void }
   theme?: HopperTheme
@@ -59,15 +59,17 @@ export function registerPanel(ctx: PanelCtx): { cleanup: () => void; model: () =
     rpc.events.on("finding.changed", () => void refresh()),
     ctx.ui.slot({
       append: "session.panel",
-      render: (panel: { name?: string }) =>
-        panel.name === "hopper.ledger" ? <LedgerPanel ctx={ctx} model={model} /> : null,
+      render: (panel: { name?: string; toggleFullscreen?: () => void }) =>
+        panel.name === "hopper.ledger" ? (
+          <LedgerPanel ctx={ctx} model={model} toggleFullscreen={panel.toggleFullscreen} />
+        ) : null,
     }),
   ]
 
   return { model, cleanup: () => stops.forEach((stop) => stop()) }
 }
 
-function LedgerPanel(props: { ctx: PanelCtx; model: () => PanelModel }) {
+function LedgerPanel(props: { ctx: PanelCtx; model: () => PanelModel; toggleFullscreen?: () => void }) {
   const theme = props.ctx.theme
   const base = resolveToken(theme, "base")
   const muted = resolveToken(theme, "muted")
@@ -79,6 +81,7 @@ function LedgerPanel(props: { ctx: PanelCtx; model: () => PanelModel }) {
     commands: [
       { id: "hopper.ledger.tab.next", bind: "right", title: "Next lifecycle tab", run: () => setTab((t) => cycleStatus(t, 1)) },
       { id: "hopper.ledger.tab.prev", bind: "left", title: "Previous lifecycle tab", run: () => setTab((t) => cycleStatus(t, -1)) },
+      { id: "hopper.ledger.fullscreen", bind: "f", title: "Toggle ledger fullscreen", run: () => props.toggleFullscreen?.() },
       ...LIFECYCLE.map((status, i) => ({
         id: `hopper.ledger.tab.${i + 1}`,
         bind: String(i + 1),

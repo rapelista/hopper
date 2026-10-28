@@ -5,7 +5,7 @@ import { currentSession } from "./current-session"
 import { resolveToken, type HopperTheme } from "./theme"
 
 /**
- * Surface 1 — the operation banner. The always-visible context strip Hopper's
+ * Surface 1 — the operation banner. The always-visible context strip the
  * persona prose called "the operation banner": operation → target · opsec +
  * compact findings counts, in the prompt footer and the home footer.
  */
@@ -57,7 +57,7 @@ export function registerStatus(ctx: StatusCtx): { cleanup: () => void; status: (
 
   const line = () => {
     const s = status()
-    if (s === null) return "hop"
+    if (s === null) return "hop · …" // pre-fetch — visually distinct from "no operation"
     return bannerText({ operation: s.operation, opsec: s.opsec, counts: s.findings })
   }
   const fg = () => {
