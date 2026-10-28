@@ -25,17 +25,19 @@ export function buildPanelModel(status: OperationStatusResult | null, findings: 
 
 export interface PanelCtx {
   ui: { slot: (spec: { append: string; render: (input: { name?: string }) => unknown }) => () => void }
-  client: { rpc: (def: unknown) => HopperRpcClient & { findings: (input: { operationId?: string }) => Promise<{ items: FindingSummary[] }> } }
+  client: { rpc: (def: unknown) => HopperRpcClient & { findings: (input: { operationId?: string }, options?: { location?: unknown }) => Promise<{ items: FindingSummary[] }> } }
   theme?: { text: Record<string, string> }
+  location?: unknown
 }
 
 export function registerPanel(ctx: PanelCtx): { cleanup: () => void; model: () => PanelModel } {
   const rpc = ctx.client.rpc(Hopper)
+  const opts = () => (ctx.location === undefined ? {} : { location: ctx.location })
   const [model, setModel] = createSignal<PanelModel>(buildPanelModel(null, []))
 
   const refresh = async () => {
     try {
-      const [status, findings] = await Promise.all([rpc.operationStatus({}), rpc.findings({})])
+      const [status, findings] = await Promise.all([rpc.operationStatus({}, opts()), rpc.findings({}, opts())])
       setModel(buildPanelModel(status, findings.items))
     } catch (err) {
       console.error("[hopper-tui] panel refresh failed:", err)

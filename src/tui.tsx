@@ -13,6 +13,8 @@ export default Plugin.define({
   id: "hopper-tui",
   setup(context) {
     const cleanups: Array<() => void> = []
+    // rpc calls must carry the location or the server consults its default registry
+    const location = context.location ?? context.data.location.default()
 
     cleanups.push(
       registerStatus({
@@ -20,6 +22,7 @@ export default Plugin.define({
         client: context.client,
         data: context.data,
         theme: context.theme,
+        location,
       } as unknown as StatusCtx).cleanup,
     )
 
@@ -28,6 +31,7 @@ export default Plugin.define({
         ui: context.ui,
         client: context.client,
         theme: context.theme,
+        location,
       } as unknown as PanelCtx).cleanup,
     )
 
@@ -38,6 +42,7 @@ export default Plugin.define({
         client: context.client,
         data: context.data,
         session: { prompt: (input: { sessionID: string; text: string }) => context.client.session.prompt(input) },
+        location,
       } as unknown as CommandsCtx).cleanup,
     )
 

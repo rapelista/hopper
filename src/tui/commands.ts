@@ -37,16 +37,18 @@ export interface CommandsCtx {
   }
   client: {
     rpc: (def: unknown) => HopperRpcClient & {
-      createOperation: (i: { name: string; target: string }) => Promise<{ operation: OperationSummary }>
-      setOpsec: (i: { level: "normal" | "strict" }) => Promise<{ opsec: "normal" | "strict" } | { type: string; message: string }>
+      createOperation: (i: { name: string; target: string }, options?: { location?: unknown }) => Promise<{ operation: OperationSummary }>
+      setOpsec: (i: { level: "normal" | "strict" }, options?: { location?: unknown }) => Promise<{ opsec: "normal" | "strict" } | { type: string; message: string }>
     }
   }
   data: { on: (name: string, cb: (event: { data: unknown }) => void) => () => void }
   session: { prompt: (input: { sessionID: string; text: string }) => Promise<unknown> }
+  location?: unknown
 }
 
 export function registerCommands(ctx: CommandsCtx): { cleanup: () => void } {
   const rpc = ctx.client.rpc(Hopper)
+  const opts = () => (ctx.location === undefined ? {} : { location: ctx.location })
   let currentSessionID: string | undefined
   const stopTrack = ctx.data.on("tui.session.select", (event) => {
     const data = event.data as { sessionID?: string } | undefined
@@ -61,7 +63,7 @@ export function registerCommands(ctx: CommandsCtx): { cleanup: () => void } {
       if (!t) return // cancelled
     }
     const name = defaultOperationName(t)
-    const status = await rpc.operationStatus({}).catch(() => null)
+    const status = await rpc.operationStatus({}, opts()).catch(() => null)
     if (status?.operation) {
       const replace = await ctx.ui.dialog.confirm({
         title: "Replace active operation?",
@@ -71,7 +73,7 @@ export function registerCommands(ctx: CommandsCtx): { cleanup: () => void } {
     }
     let created: { operation: OperationSummary }
     try {
-      created = await rpc.createOperation({ name, target: t })
+      created = await rpc.createOperation({ name, target: t }, opts())
     } catch (err) {
       console.error("[hopper-tui] createOperation failed:", err)
       ctx.ui.toast.show({
@@ -98,7 +100,7 @@ export function registerCommands(ctx: CommandsCtx): { cleanup: () => void } {
   }
 
   const runOpsec = async () => {
-    const status = await rpc.operationStatus({}).catch(() => null)
+    const status = await rpc.operationStatus({}, opts()).catch(() => null)
     const picked = await ctx.ui.dialog.select({
       title: "Opsec posture",
       current: status?.opsec ?? "normal",
@@ -109,7 +111,7 @@ export function registerCommands(ctx: CommandsCtx): { cleanup: () => void } {
     })
     if (picked !== "normal" && picked !== "strict") return
     try {
-      const res = await rpc.setOpsec({ level: picked })
+      const res = await rpc.setOpsec({ level: picked }, opts())
       if (typeof res === "object" && res !== null && "type" in res && (res as { type: string }).type === "no_scope") {
         ctx.ui.toast.show({ title: "Hopper", message: (res as { message?: string }).message ?? "no active scope", variant: "error" })
         return

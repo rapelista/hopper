@@ -9,8 +9,8 @@ import { bannerText } from "./format"
  */
 
 export interface HopperRpcClient {
-  operationStatus: (input: unknown) => Promise<OperationStatusResult>
-  findings?: (input: { operationId?: string }) => Promise<{ items: import("../rpc").FindingSummary[] }>
+  operationStatus: (input: unknown, options?: { location?: unknown }) => Promise<OperationStatusResult>
+  findings?: (input: { operationId?: string }, options?: { location?: unknown }) => Promise<{ items: import("../rpc").FindingSummary[] }>
   events: { on: (name: string, cb: (event: { data: unknown }) => void) => () => void }
 }
 
@@ -19,15 +19,18 @@ export interface StatusCtx {
   client: { rpc: (def: unknown) => HopperRpcClient }
   data: { on: (name: string, cb: (event: { data: unknown }) => void) => () => void }
   theme?: { text: Record<string, string> }
+  /** rpc calls must carry the plugin's location or the server consults its default registry */
+  location?: unknown
 }
 
 export function registerStatus(ctx: StatusCtx): { cleanup: () => void; status: () => OperationStatusResult | null } {
   const rpc = ctx.client.rpc(Hopper)
+  const opts = () => (ctx.location === undefined ? {} : { location: ctx.location })
   const [status, setStatus] = createSignal<OperationStatusResult | null>(null)
 
   const refresh = async () => {
     try {
-      setStatus(await rpc.operationStatus({}))
+      setStatus(await rpc.operationStatus({}, opts()))
     } catch (err) {
       // unreachable server / invalid call — keep the last known state, but leave a trace
       console.error("[hopper-tui] operationStatus failed:", err)
