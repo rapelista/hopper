@@ -1,4 +1,4 @@
-import { createSignal, For, Show } from "solid-js"
+import { createSignal, For, Show, onMount, onCleanup } from "solid-js"
 import { Hopper, type FindingSummary, type OperationStatusResult } from "../rpc"
 import { LIFECYCLE, cycleStatus, severityToken, statusInitial, severityShort } from "./format"
 import { resolveToken, resolveActiveBackground, type HopperTheme } from "./theme"
@@ -64,10 +64,13 @@ export function registerLedger(ctx: LedgerCtx): { cleanup: () => void; open: () 
   ]
 
   const open = () => {
-    ctx.ui.dialog.set({ size: "xlarge", centered: true })
-    ctx.ui.dialog.show(() => (
-      <LedgerDialog ctx={ctx} model={model} />
-    ))
+    try {
+      // upstream order (btw.tsx): show first, then set — set() applies to the ACTIVE dialog
+      ctx.ui.dialog.show(() => <LedgerDialog ctx={ctx} model={model} />)
+      ctx.ui.dialog.set({ size: "xlarge", centered: true })
+    } catch (err) {
+      console.error("[hopper-tui] ledger dialog failed to open:", err)
+    }
   }
 
   return { open, model, cleanup: () => stops.forEach((stop) => stop()) }
@@ -80,19 +83,23 @@ function LedgerDialog(props: { ctx: LedgerCtx; model: () => PanelModel | null })
   const activeBg = resolveActiveBackground(theme)
   const [tab, setTab] = createSignal<string>("candidate")
 
-  // Dialog-scoped keymap: created in the component, disposed with the dialog
-  props.ctx.keymap?.layer(() => ({
-    commands: [
-      { id: "hopper.ledger.tab.next", bind: "right", title: "Next lifecycle tab", run: () => setTab((t) => cycleStatus(t, 1)) },
-      { id: "hopper.ledger.tab.prev", bind: "left", title: "Previous lifecycle tab", run: () => setTab((t) => cycleStatus(t, -1)) },
-      ...LIFECYCLE.map((status, i) => ({
-        id: `hopper.ledger.tab.${i + 1}`,
-        bind: String(i + 1),
-        title: `Jump to ${status}`,
-        run: () => setTab(status),
-      })),
-    ],
-  }))
+  // Dialog-scoped keymap: created after mount (never during render — no
+  // upstream dialog creates layers inline), disposed with the dialog
+  onMount(() => {
+    const stop = props.ctx.keymap?.layer(() => ({
+      commands: [
+        { id: "hopper.ledger.tab.next", bind: "right", title: "Next lifecycle tab", run: () => setTab((t) => cycleStatus(t, 1)) },
+        { id: "hopper.ledger.tab.prev", bind: "left", title: "Previous lifecycle tab", run: () => setTab((t) => cycleStatus(t, -1)) },
+        ...LIFECYCLE.map((status, i) => ({
+          id: `hopper.ledger.tab.${i + 1}`,
+          bind: String(i + 1),
+          title: `Jump to ${status}`,
+          run: () => setTab(status),
+        })),
+      ],
+    }))
+    if (stop) onCleanup(stop)
+  })
 
   const m = () => props.model() ?? buildPanelModel(null, [])
   const items = () => m().byStatus[tab()] ?? []
