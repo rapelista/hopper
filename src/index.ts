@@ -117,8 +117,10 @@ export function loadBundledAgents(agentsDir = join(repoRoot, "src", "agents")): 
     if (!entry.isFile() || !entry.name.endsWith(".md")) continue
     const parsed = splitFrontmatter(readFileSync(join(agentsDir, entry.name), "utf8"))
     if (!parsed) continue
-    const fm = (key: string) =>
-      parsed.front.find((l) => l.startsWith(key + ":"))?.slice(key.length + 1).trim()
+    const fm = (key: string) => {
+      const raw = parsed.front.find((l) => l.startsWith(key + ":"))?.slice(key.length + 1).trim()
+      return raw === undefined ? undefined : unquote(raw) // strip YAML quotes: color: "#hex" → #hex
+    }
     const permIdx = parsed.front.findIndex((l) => /^permission:/.test(l))
     const mode = fm("mode")
     out.push({

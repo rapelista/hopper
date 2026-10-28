@@ -309,6 +309,12 @@ describe("hopper v2 plugin", () => {
 
     const security = apply("security") as { permissions: unknown[] }
     expect(security.permissions).toEqual([]) // default posture, no overrides
+
+    // Colors must be bare hex — YAML quotes must be stripped (RGBA.fromHex fails otherwise)
+    for (const rec of agentUpdates) {
+      const agent = apply(rec.id) as { color?: string }
+      expect(agent.color).toMatch(/^#[0-9a-fA-F]{6}$/)
+    }
   })
 
   test("setup bundles the slash commands with agent switch and $ARGUMENTS", async () => {
