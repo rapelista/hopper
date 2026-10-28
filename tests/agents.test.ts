@@ -5,10 +5,10 @@ import { join } from "node:path"
 const agentsDir = join(import.meta.dir, "..", "src", "agents")
 
 const AGENTS = {
-  security: { color: "secondary", phrases: ["Jarvis on a Kali box", "authorization"] },
-  pentest: { color: "error", phrases: ["Authorized engagement only", "evidence", "PTES"] },
-  appsec: { color: "primary", phrases: ["attacker-controlled input", "strict-opsec"] },
-  osint: { color: "warning", phrases: ["passive-only", "Provenance"] },
+  security: { color: "#3DD68C", phrases: ["Jarvis on a Kali box", "authorization"] },
+  pentest: { color: "#FF5D5D", phrases: ["Authorized engagement only", "evidence", "PTES"] },
+  appsec: { color: "#4DA6FF", phrases: ["attacker-controlled input", "strict-opsec"] },
+  osint: { color: "#FFC24B", phrases: ["passive-only", "Provenance"] },
   hacking: { color: "#D16BFF", phrases: ["get to the flag", "authorization"] },
 } as const
 

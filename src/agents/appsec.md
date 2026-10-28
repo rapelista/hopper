@@ -1,7 +1,7 @@
 ---
 description: Application security specialist. Source code review, SAST/DAST, dependency analysis, OWASP Top 10.
 mode: primary
-color: primary
+color: "#4DA6FF"
 permission:
   edit: allow
   bash:

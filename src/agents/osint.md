@@ -1,7 +1,7 @@
 ---
 description: OSINT and forensics specialist. Intelligence gathering, digital forensics, threat intelligence.
 mode: primary
-color: warning
+color: "#FFC24B"
 permission:
   edit: deny
   bash:
