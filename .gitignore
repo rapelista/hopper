@@ -1,0 +1,6 @@
+node_modules/
+.opencode/data/
+.opencode/share/
+.opencode/scope.json
+.superpowers/
+docs/
