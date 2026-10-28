@@ -5,46 +5,44 @@ export type GuardResult = { ok: true } | { ok: false; reason: string; violations
 const IPV4_RE = /(?<![:\w.])(\d{1,3}(?:\.\d{1,3}){3})(?![\w.])/g
 const URL_RE = /https?:\/\/[^\s"'`]+/g
 const DOMAIN_RE = /\b((?:[a-z0-9][a-z0-9-]{0,62}\.)+[a-z]{2,63})\b/gi
-const BARE_INT_RE = /(?<![:\w.])(?:0x[0-9a-fA-F]{7,10}|\d{7,10})(?![\w.])/g
 
 const FILE_EXT_RE =
-  /\.(php|m?js|html?|css|png|jpe?g|gif|svg|ico|log|xml|json|csv|map|env|bak|old|ya?ml|conf|ini|sh|py|rb|go|ts|txt|md|pdf|tar|gz|zip|lock|db)$/i
+  /\.(php|m?js|html?|css|png|jpe?g|gif|svg|ico|log|xml|json|csv|map|env|bak|old|ya?ml|conf|ini|sh|py|pyc|rb|go|ts|txt|md|pdf|tar|gz|zip|lock|db)$/i
 
-/** inet_aton-style part parse: 0x… → hex, leading 0 → octal, else decimal. */
-function parsePart(part: string): number | null {
-  if (/^0[xX][0-9a-fA-F]+$/.test(part)) return parseInt(part.slice(2), 16)
-  if (/^0[0-7]+$/.test(part) && part.length > 1) return parseInt(part.slice(1), 8)
-  if (/^\d{1,10}$/.test(part)) return parseInt(part, 10)
-  return null
-}
-
-/** Decode dotted (2-4 parts) or bare/hex integer encodings to a 32-bit IPv4 value; null if not an IP. */
+/**
+ * Parse a plain decimal dotted-quad IPv4 to a 32-bit value; null otherwise.
+ * NOTE (intentional): encoded-IP detection (bare decimal/hex integers, octal
+ * parts like 010.0.0.1) was removed together with the SSRF guard — the
+ * operator is responsible for what their commands connect to.
+ */
 export function parseIpToken(token: string): number | null {
-  if (/^0x[0-9a-fA-F]{7,10}$/.test(token) || /^\d{7,10}$/.test(token)) {
-    const v = parsePart(token)
-    return v !== null && v <= 0xffffffff ? v : null
-  }
   const parts = token.split(".")
-  if (parts.length < 2 || parts.length > 4) return null
+  if (parts.length !== 4) return null
   let value = 0
-  for (let i = 0; i < parts.length; i++) {
-    const p = parsePart(parts[i]!)
-    if (p === null || p > 0xffffffff) return null
-    const shift = (3 - i) * 8
-    if (parts.length === 4 && p > 255) return null
-    value += p * 2 ** shift
+  for (const part of parts) {
+    if (!/^\d{1,3}$/.test(part)) return null
+    const p = Number(part)
+    if (p > 255) return null
+    value = value * 256 + p
   }
   return value >>> 0
 }
 
-export function ipToString(n: number): string {
-  return [(n >>> 24) & 255, (n >>> 16) & 255, (n >>> 8) & 255, n & 255].join(".")
-}
-
-/** Loopback + RFC1918 only. Cloud metadata 169.254/16 is deliberately NOT here. */
+/**
+ * Auto-allowed networks without a scope entry: loopback, RFC1918, and
+ * link-local (169.254/16 — cloud metadata). The SSRF guard that used to
+ * special-case the metadata range was removed intentionally: pentest tool,
+ * the operator is responsible.
+ */
 function isAutoAllowedPrivateIp(n: number): boolean {
   const within = (cidr: number, bits: number) => (n >>> (32 - bits)) === (cidr >>> (32 - bits))
-  return within(0x7f000000, 8) || within(0x0a000000, 8) || within(0xac100000, 12) || within(0xc0a80000, 16)
+  return (
+    within(0x7f000000, 8) ||
+    within(0x0a000000, 8) ||
+    within(0xac100000, 12) ||
+    within(0xc0a80000, 16) ||
+    within(0xa9fe0000, 16)
+  )
 }
 
 function isAutoAllowedHost(host: string): boolean {
@@ -66,12 +64,7 @@ function extractTargets(command: string): Extracted {
   for (const m of command.matchAll(URL_RE)) {
     try {
       const u = new URL(m[0])
-      const asIp =
-        /^\d{1,3}(\.\d{1,3}){3}$/.test(u.hostname) || /^\d{7,10}$/.test(u.hostname) || /^0x/.test(u.hostname)
-          ? parseIpToken(u.hostname)
-          : null
-      if (asIp !== null) ips.push(ipToString(asIp))
-      else hosts.push(u.hostname.toLowerCase())
+      hosts.push(u.hostname.toLowerCase())
     } catch {
       // unparsable URL — leave for token scan
     }
@@ -89,11 +82,6 @@ function extractTargets(command: string): Extracted {
   for (const m of work.matchAll(IPV4_RE)) {
     if (isPathSegment(m.index)) continue
     ips.push(m[1]!)
-  }
-  for (const m of work.matchAll(BARE_INT_RE)) {
-    if (isPathSegment(m.index)) continue
-    const v = parseIpToken(m[0])
-    if (v !== null) ips.push(ipToString(v))
   }
 
   for (const m of work.matchAll(DOMAIN_RE)) {

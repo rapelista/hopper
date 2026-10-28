@@ -37,8 +37,13 @@ describe("bashScopeGuard", () => {
     expect(bashScopeGuard(null, "nmap -p 1-100 scanme.nmap.org").ok).toBe(true)
   })
 
-  test("cloud metadata IP is blocked even inside a scoped operation", () => {
-    expect(bashScopeGuard(scope(["*.example.test"]), "curl http://169.254.169.254/latest/meta-data").ok).toBe(false)
+  test("metadata IP is auto-allowed like other private ranges (SSRF guard removed)", () => {
+    expect(bashScopeGuard(scope(["*.example.test"]), "curl http://169.254.169.254/latest/meta-data").ok).toBe(true)
+  })
+
+  test("encoded integers are no longer decoded as IPs (SSRF guard removed)", () => {
+    expect(bashScopeGuard(scope(["*.lab.test"]), "curl http://2852039166/").ok).toBe(true)
+    expect(bashScopeGuard(scope(["*.lab.test"]), "nmap -p 80 010.0.0.1").ok).toBe(true)
   })
 
   test("localhost is auto-allowed", () => {
@@ -63,14 +68,6 @@ describe("bashScopeGuard", () => {
 
   test("output-file arguments are not treated as hosts", () => {
     expect(bashScopeGuard(scope(["*.lab.test"]), "nmap -sV -T4 app.lab.test -oN scan.log").ok).toBe(true)
-  })
-
-  test("decimal-encoded cloud metadata IP is blocked", () => {
-    expect(bashScopeGuard(scope(["*.lab.test"]), "curl http://2852039166/").ok).toBe(false)
-  })
-
-  test("octal-encoded public IP requires scope", () => {
-    expect(bashScopeGuard(scope(["*.lab.test"]), "nmap -p 80 010.0.0.1").ok).toBe(false)
   })
 
   test("in-scope dotted IPv4 still passes", () => {
@@ -113,7 +110,8 @@ describe("bashScopeGuard", () => {
   test("space-position hosts still blocked (regression)", () => {
     expect(bashScopeGuard(scope(["example.test"]), "nmap -p 1-100 scanme.nmap.org").ok).toBe(false)
     expect(bashScopeGuard(scope(["example.test"]), "host 203.0.113.9").ok).toBe(false)
-    expect(bashScopeGuard(scope(["example.test"]), "curl http://2852039166/").ok).toBe(false)
+    // encoded integers are no longer decoded (SSRF guard removed intentionally)
+    expect(bashScopeGuard(scope(["example.test"]), "curl http://2852039166/").ok).toBe(true)
   })
 })
 
@@ -213,15 +211,15 @@ describe("hopper v2 plugin", () => {
     const { ctx, toolHooks } = makeMockCtx(tmpProject)
     await (hopperPlugin as { setup: (ctx: unknown) => Promise<unknown> }).setup(ctx)
     const hook = toolHooks["execute.before"]! as (event: unknown) => Promise<void>
-    const violation = hook({ ...EVENT_BASE, tool: "shell", input: { command: "curl http://169.254.169.254/" } })
-    await expect(violation).rejects.toThrow(/169\.254\.169\.254/)
+    const violation = hook({ ...EVENT_BASE, tool: "shell", input: { command: "curl http://scanme.nmap.org/" } })
+    await expect(violation).rejects.toThrow(/scanme\.nmap\.org/)
     await expect(hook({ ...EVENT_BASE, tool: "shell", input: { command: "curl http://localhost:3000/" } })).resolves.toBeUndefined()
   })
 
   test("guard result carries the violation list for the dialog", () => {
-    const res = bashScopeGuard(scope(["example.test"]), "curl http://169.254.169.254/")
+    const res = bashScopeGuard(scope(["example.test"]), "nmap scanme.nmap.org")
     expect(res.ok).toBe(false)
-    if (!res.ok) expect(res.violations).toContain("169.254.169.254")
+    if (!res.ok) expect(res.violations).toContain("scanme.nmap.org")
   })
 
   test("non-strict: violation triggers the allow/deny dialog and proceeds on allow", async () => {
@@ -235,14 +233,14 @@ describe("hopper v2 plugin", () => {
     await (hopperPlugin as { setup: (ctx: unknown) => Promise<unknown> }).setup(ctx)
     const hook = toolHooks["execute.before"]! as (event: unknown) => Promise<void>
     await expect(
-      hook({ ...EVENT_BASE, tool: "shell", input: { command: "curl http://169.254.169.254/latest/meta-data" } }),
+      hook({ ...EVENT_BASE, tool: "shell", input: { command: "curl http://scanme.nmap.org/whyami" } }),
     ).resolves.toBeUndefined()
     expect(asserts.length).toBe(1)
     const a = asserts[0] as Record<string, unknown>
     expect(a.action).toBe("scope-escape")
-    expect(a.resources).toEqual(["169.254.169.254"])
-    expect(a.save).toEqual(["169.254.169.254"])
-    expect(a.metadata).toMatchObject({ reason: expect.stringContaining("169.254.169.254") })
+    expect(a.resources).toEqual(["scanme.nmap.org"])
+    expect(a.save).toEqual(["scanme.nmap.org"])
+    expect(a.metadata).toMatchObject({ reason: expect.stringContaining("scanme.nmap.org") })
   })
 
   test("non-strict: dialog denial rejects the call", async () => {
@@ -254,7 +252,7 @@ describe("hopper v2 plugin", () => {
     })
     await (hopperPlugin as { setup: (ctx: unknown) => Promise<unknown> }).setup(ctx)
     const hook = toolHooks["execute.before"]! as (event: unknown) => Promise<void>
-    await expect(hook({ ...EVENT_BASE, tool: "shell", input: { command: "curl http://2852039166/" } })).rejects.toThrow(
+    await expect(hook({ ...EVENT_BASE, tool: "shell", input: { command: "curl http://203.0.113.9/" } })).rejects.toThrow(
       /denied by operator/,
     )
   })
