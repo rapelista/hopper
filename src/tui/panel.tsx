@@ -91,7 +91,7 @@ function LedgerPanel(props: { ctx: PanelCtx; model: () => PanelModel }) {
   const items = () => props.model().byStatus[tab()] ?? []
 
   const tabBar = (
-    <box flexDirection="row" gap={1} flexShrink={0}>
+    <box flexDirection="row" gap={1} flexShrink={0} flexWrap="wrap" columnGap={1}>
       <For each={LIFECYCLE}>
         {(status) => (
           <box
