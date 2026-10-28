@@ -1,6 +1,6 @@
 import { Plugin } from "@opencode/plugin/tui"
 import { registerStatus, type StatusCtx } from "./tui/status"
-import { registerPanel, type PanelCtx } from "./tui/panel"
+import { registerLedger, type LedgerCtx } from "./tui/ledger"
 import { registerCommands, type CommandsCtx } from "./tui/commands"
 import { registerNotifications, type NotificationsCtx } from "./tui/notifications"
 
@@ -27,15 +27,14 @@ export default Plugin.define({
       } as unknown as StatusCtx).cleanup,
     )
 
-    cleanups.push(
-      registerPanel({
-        ui: context.ui,
-        client: context.client,
-        keymap: context.keymap,
-        theme: context.theme,
-        location,
-      } as unknown as PanelCtx).cleanup,
-    )
+    const ledger = registerLedger({
+      ui: context.ui,
+      client: context.client,
+      keymap: context.keymap,
+      theme: context.theme,
+      location,
+    } as unknown as LedgerCtx)
+    cleanups.push(ledger.cleanup)
 
     cleanups.push(
       registerCommands({
@@ -44,6 +43,7 @@ export default Plugin.define({
         client: context.client,
         data: context.data,
         session: { prompt: (input: { sessionID: string; text: string }) => context.client.session.prompt(input) },
+        ledger: { open: ledger.open },
         location,
       } as unknown as CommandsCtx).cleanup,
     )

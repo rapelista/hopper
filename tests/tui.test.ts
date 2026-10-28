@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import { registerStatus } from "../src/tui/status"
-import { buildPanelModel } from "../src/tui/panel"
+import { buildPanelModel } from "../src/tui/ledger"
 import { parsePwnArgument, buildKickoffPrompt, registerCommands } from "../src/tui/commands"
 import { registerNotifications } from "../src/tui/notifications"
 import { currentSession } from "../src/tui/current-session"
@@ -89,9 +89,9 @@ describe("status module", () => {
   })
 })
 
-// ----------------------------------------------------------------- panel ----
+// --------------------------------------------------------------- ledger ----
 
-describe("panel model", () => {
+describe("ledger model", () => {
   const f = (id: string, st: string, sev = "high"): FindingSummary =>
     ({ id, title: `t-${id}`, severity: sev, status: st, target: "localhost", createdAt: "x" })
 
@@ -161,7 +161,6 @@ describe("commands module (registration)", () => {
     const dialogs: string[] = []
     const calls: Array<{ method: string; input: unknown }> = []
     const subs: Record<string, Array<(e: { data: unknown }) => void>> = {}
-    let openPanel: { name: string; sessionID: string } | undefined
     const ctx = {
       keymap: { layer: (factory: () => Record<string, unknown>) => { layers.push(factory()); return () => {} } },
       ui: {
@@ -171,11 +170,7 @@ describe("commands module (registration)", () => {
           select: async (i: unknown) => { dialogs.push("select"); return "strict" },
         },
         toast: { show: (t: unknown) => { toasts.push(t) } },
-        panel: {
-          open: (name: string) => { calls.push({ method: "panel.open", input: name }); openPanel = { name, sessionID: "s1" }; return true },
-          close: () => { calls.push({ method: "panel.close", input: undefined }); openPanel = undefined },
-          current: () => openPanel,
-        },
+        ledger: { open: () => { calls.push({ method: "ledger.open", input: undefined }) } },
       },
       client: {
         rpc: () => ({
@@ -206,40 +201,11 @@ describe("commands module (registration)", () => {
     expect(cmds).toContain("hopper.ledger")
   })
 
-  test("ledger toggles: opens when closed, closes when already open", () => {
+  test("ledger command opens the dialog", () => {
     const c = commandsCtx()
     registerCommands(c.ctx as never)
-    const ledger = commandsOf(c).find((cmd) => cmd.id === "hopper.ledger")!
-    ledger.run()
-    expect(c.calls).toContainEqual({ method: "panel.open", input: "hopper.ledger" })
-    ledger.run() // panel now open → this run closes it
-    expect(c.calls).toContainEqual({ method: "panel.close", input: undefined })
-    expect(c.calls.filter((call) => call.method === "panel.open")).toHaveLength(1)
-  })
-
-  test("pwn: prompts target, confirms replacement, creates, toasts, submits kickoff", async () => {
-    const c = commandsCtx()
-    registerCommands(c.ctx as never)
-    c.subs["tui.session.select"]![0]!({ data: { sessionID: "s1" } }) // a session is current
-    const pwn = commandsOf(c).find((cmd) => cmd.id === "hopper.pwn")!
-    await pwn.run("")
-    expect(c.dialogs).toContainEqual("prompt:Operation target")
-    expect(c.dialogs).toContainEqual("confirm:Replace active operation?")
-    expect(c.calls).toContainEqual({ method: "createOperation", input: { name: "example", target: "example.test" } })
-    expect(c.toasts.some((t) => JSON.stringify(t).includes("active"))).toBe(true)
-    expect(c.calls.some((call) => call.method === "session.prompt" && JSON.stringify(call.input).includes("PTES"))).toBe(true)
-  })
-
-  test("pwn without a current session: still creates, hints instead of submitting", async () => {
-    currentSession.reset()
-    const c = commandsCtx()
-    registerCommands(c.ctx as never)
-    const pwn = commandsOf(c).find((cmd) => cmd.id === "hopper.pwn")!
-    await pwn.run("example.test") // target given — no prompt dialog
-    expect(c.dialogs).not.toContain("prompt:Operation target")
-    expect(c.calls).toContainEqual({ method: "createOperation", input: { name: "example", target: "example.test" } })
-    expect(c.calls.some((call) => call.method === "session.prompt")).toBe(false)
-    expect(c.toasts.some((t) => JSON.stringify(t).includes("open a session"))).toBe(true)
+    commandsOf(c).find((cmd) => cmd.id === "hopper.ledger")!.run()
+    expect(c.calls).toContainEqual({ method: "ledger.open", input: undefined })
   })
 
   test("opsec runs the select dialog and sets the level", async () => {

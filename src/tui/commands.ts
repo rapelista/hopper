@@ -6,7 +6,7 @@ import type { HopperRpcClient } from "./status"
 /**
  * Surface 3 — interactive flows: `/pwn` (create an operation, confirm-on-replace,
  * kickoff prompt with NO auto-OSINT) and `/opsec` (posture select), plus
- * `/ledger` to open the findings panel.
+ * `/ledger` to open the findings ledger dialog.
  */
 
 export function parsePwnArgument(arg: string): { target?: string } {
@@ -34,11 +34,7 @@ export interface CommandsCtx {
       select: (i: unknown) => Promise<unknown>
     }
     toast: { show: (t: { title?: string; message: string; variant?: "success" | "error" | "warning" }) => void }
-    panel: {
-      open: (name: string) => boolean
-      close: () => void
-      current: () => { name: string; sessionID: string } | undefined
-    }
+    ledger: { open: () => void }
   }
   client: {
     rpc: (def: unknown) => HopperRpcClient & {
@@ -154,9 +150,7 @@ export function registerCommands(ctx: CommandsCtx): { cleanup: () => void } {
         slash: { name: "ledger" },
         palette: true,
         run: () => {
-          // toggle: close only OUR panel; another plugin's panel is never touched
-          if (ctx.ui.panel.current()?.name === "hopper.ledger") ctx.ui.panel.close()
-          else ctx.ui.panel.open("hopper.ledger")
+          ctx.ui.ledger.open()
         },
       },
     ],
