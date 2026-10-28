@@ -230,17 +230,17 @@ describe("hopper v2 plugin", () => {
     const { ctx, addedCommands, agentSwitches, prompts } = makeMockCtx(tmpProject)
     await (hopperPlugin as { setup: (ctx: unknown) => Promise<unknown> }).setup(ctx)
     expect(addedCommands.map((c) => c.name).sort()).toEqual(
-      ["doctor", "opsec", "pwn", "remediate", "report", "runbook", "share"].sort(),
+      ["doctor", "remediate", "report", "runbook", "share"].sort(), // pwn/opsec retired → interactive tui commands
     )
 
-    const pwn = addedCommands.find((c) => c.name === "pwn")!
-    expect(pwn.description?.length).toBeGreaterThan(5)
-    await pwn.execute({ sessionID: "s1", prompt: { text: "http://localhost:3000" }, delivery: "steer" })
+    const runbook = addedCommands.find((c) => c.name === "runbook")!
+    expect(runbook.description?.length).toBeGreaterThan(5)
+    await runbook.execute({ sessionID: "s1", prompt: { text: "appsec-web-triage" }, delivery: "steer" })
 
     expect(agentSwitches).toEqual([{ sessionID: "s1", agent: "pentest" }])
     const p = prompts[0] as { text: string; sessionID: string }
     expect(p.sessionID).toBe("s1")
-    expect(p.text).toContain("http://localhost:3000")
+    expect(p.text).toContain("appsec-web-triage")
     expect(p.text).not.toContain("$ARGUMENTS")
   })
 

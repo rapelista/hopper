@@ -13,31 +13,10 @@ function readCommand(name: string) {
   return { frontmatter: m[1]!, body: m[2]! }
 }
 
-describe("command /pwn", () => {
-  test("exists with frontmatter", () => {
-    expect(readCommand("pwn")).not.toBeNull()
-  })
-  test("targets the pentest agent", () => {
-    expect(readCommand("pwn")!.frontmatter).toMatch(/^description:\s*.+/m)
-    expect(readCommand("pwn")!.frontmatter).toMatch(/agent:\s*pentest/)
-  })
-  test("bootstraps scope from $ARGUMENTS", () => {
-    const body = readCommand("pwn")!.body
-    expect(body).toContain("$ARGUMENTS")
-    expect(body).toContain("scope.json")
-    expect(body.toLowerCase()).toContain("doctor")
-  })
-})
-
-describe("command /opsec", () => {
-  test("exists with frontmatter and agent", () => {
-    const cmd = readCommand("opsec")!
-    expect(cmd).not.toBeNull()
-    expect(cmd.frontmatter).toMatch(/^description:\s*.+/m)
-    expect(cmd.frontmatter).toMatch(/agent:\s*\w+/)
-  })
-  test("toggles strict posture", () => {
-    expect(readCommand("opsec")!.body.toLowerCase()).toContain("strict")
+describe("retired commands (superseded by the interactive tui commands)", () => {
+  test("pwn and opsec templates are gone - reintroduction would collide with the tui slash names", () => {
+    expect(readCommand("pwn")).toBeNull()
+    expect(readCommand("opsec")).toBeNull()
   })
 })
 
@@ -55,7 +34,7 @@ describe("command /doctor", () => {
 
 describe("no upstream branding in commands", () => {
   test("clean of banned strings", () => {
-    for (const name of ["pwn", "opsec", "doctor"]) {
+    for (const name of ["doctor", "remediate", "report", "runbook", "share"]) {
       expect(readCommand(name)!.body.toLowerCase()).not.toContain(["numa", "sec"].join(""))
     }
   })
