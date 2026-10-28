@@ -63,6 +63,23 @@ describe("assertInScope (fail-closed)", () => {
   test("passes when in scope", () => {
     expect(() => assertInScope(scope(["a.test"]), "a.test")).not.toThrow()
   })
+
+  // SSRF guard removed intentionally: only DNS domains are fence-checked.
+  // Numeric and local hosts are the operator's conscious choice.
+  test("never checks numeric or local hosts (operator is responsible)", () => {
+    const sc = scope(["a.test"])
+    expect(() => assertInScope(sc, "10.0.0.5")).not.toThrow()
+    expect(() => assertInScope(sc, "192.168.1.10")).not.toThrow()
+    expect(() => assertInScope(sc, "169.254.169.254")).not.toThrow()
+    expect(() => assertInScope(sc, "203.0.113.9")).not.toThrow()
+    expect(() => assertInScope(sc, "2852039166")).not.toThrow()
+    expect(() => assertInScope(sc, "localhost")).not.toThrow()
+    expect(() => assertInScope(sc, "mycontainer")).not.toThrow()
+  })
+  test("still fences out-of-scope domains", () => {
+    expect(() => assertInScope(scope(["a.test"]), "b.test")).toThrow(ScopeError)
+    expect(() => assertInScope(scope(["a.test"]), "scanme.nmap.org")).toThrow(ScopeError)
+  })
 })
 
 describe("URL-form scope targets are normalized", () => {
@@ -95,5 +112,10 @@ describe("checkUrl", () => {
   })
   test("rejects when scope null", () => {
     expect(() => checkUrl(null, "https://a.test/")).toThrow(ScopeError)
+  })
+  test("auto-allows loopback and cloud metadata with an active scope (SSRF guard removed)", () => {
+    const sc = scope(["localhost"])
+    expect(() => checkUrl(sc, "http://169.254.169.254/latest/meta-data")).not.toThrow()
+    expect(() => checkUrl(sc, "http://127.0.0.1:3000/api")).not.toThrow()
   })
 })

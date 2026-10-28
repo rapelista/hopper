@@ -63,13 +63,21 @@ describe("http-request scope enforcement", () => {
     expect(res.hops).toEqual(["https://b.example.test/final"])
   })
 
-  test("redirect to cloud metadata IP is blocked (RF#2)", async () => {
-    let calls = 0
-    const res = request(configDir, { url: "https://a.example.test/" }, async () => {
-      calls++
-      return ok(null, { status: 302, headers: { location: "http://169.254.169.254/latest/meta-data" } })
-    })
+  test("redirect to out-of-scope domain is blocked; IP redirects pass (operator responsible)", async () => {
+    const res = request(configDir, { url: "https://a.example.test/" }, async () =>
+      ok(null, { status: 302, headers: { location: "http://scanme.nmap.org/" } }),
+    )
     expect(res).rejects.toBeInstanceOf(ScopeError)
+
+    let calls = 0
+    const meta = await request(configDir, { url: "https://a.example.test/" }, async () => {
+      calls++
+      return calls === 1
+        ? ok(null, { status: 302, headers: { location: "http://169.254.169.254/latest/meta-data" } })
+        : ok("metadata")
+    })
+    expect(calls).toBe(2) // redirect followed — IPs are never fence-checked
+    expect(meta.body).toBe("metadata")
   })
 
   test("sensitive response headers are redacted in the echo", async () => {

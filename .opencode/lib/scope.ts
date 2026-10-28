@@ -98,6 +98,17 @@ function cidrContains(cidr: string, ip: string): boolean {
   return (baseInt & mask) === (ipInt & mask)
 }
 
+/**
+ * Only DNS-style domain names (multi-label, alphabetic TLD) are scope-fence-checked.
+ * Numeric hosts (dotted-quad IPv4, bare integers, hex) and single-label local
+ * names (localhost, container names) are never checked — the SSRF guard was
+ * removed intentionally: pentest tool, the operator is responsible for every
+ * address they consciously engage.
+ */
+export function isFenceableHost(host: string): boolean {
+  return /^(?=.{1,253}$)[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*\.[a-z]{2,63}$/i.test(host)
+}
+
 export function isInScope(scope: Scope, host: string): boolean {
   const h = normalizeHost(host)
   for (const rawTarget of scope.targets) {
@@ -116,8 +127,10 @@ export function assertInScope(scope: Scope | null, host: string): void {
   if (scope === null) {
     throw new ScopeError("no active scope (fail-closed): refusing to engage any target — create one via /pwn or the operation tool first")
   }
-  if (!isInScope(scope, host)) {
-    throw new ScopeError(`target "${host}" is out of scope — allowed: ${scope.targets.join(", ")}`)
+  const h = normalizeHost(host)
+  if (!isFenceableHost(h)) return // IPs & local names are the operator's conscious choice — never fence-checked
+  if (!isInScope(scope, h)) {
+    throw new ScopeError(`target "${h}" is out of scope — allowed: ${scope.targets.join(", ")}`)
   }
 }
 

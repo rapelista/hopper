@@ -55,8 +55,9 @@ describe("bashScopeGuard", () => {
     expect(bashScopeGuard(scope(["example.test"]), "curl http://192.168.1.10/").ok).toBe(true)
   })
 
-  test("public out-of-scope IP is blocked", () => {
-    expect(bashScopeGuard(scope(["example.test"]), "curl http://203.0.113.9/").ok).toBe(false)
+  test("public IPs are not fence-checked (operator is responsible)", () => {
+    expect(bashScopeGuard(scope(["example.test"]), "curl http://203.0.113.9/").ok).toBe(true)
+    expect(bashScopeGuard(scope(["example.test"]), "nmap 8.8.8.8").ok).toBe(true)
   })
 
   test("url paths with file extensions are not treated as hosts", () => {
@@ -107,10 +108,10 @@ describe("bashScopeGuard", () => {
     expect(bashScopeGuard(scope(["localhost"]), "sha256sum conf/8.8.8.8").ok).toBe(true)
   })
 
-  test("space-position hosts still blocked (regression)", () => {
+  test("space-position domains still blocked (regression); IPs unchecked", () => {
     expect(bashScopeGuard(scope(["example.test"]), "nmap -p 1-100 scanme.nmap.org").ok).toBe(false)
-    expect(bashScopeGuard(scope(["example.test"]), "host 203.0.113.9").ok).toBe(false)
-    // encoded integers are no longer decoded (SSRF guard removed intentionally)
+    // IPs and encoded integers are never fence-checked (SSRF guard removed intentionally)
+    expect(bashScopeGuard(scope(["example.test"]), "host 203.0.113.9").ok).toBe(true)
     expect(bashScopeGuard(scope(["example.test"]), "curl http://2852039166/").ok).toBe(true)
   })
 })
@@ -252,9 +253,9 @@ describe("hopper v2 plugin", () => {
     })
     await (hopperPlugin as { setup: (ctx: unknown) => Promise<unknown> }).setup(ctx)
     const hook = toolHooks["execute.before"]! as (event: unknown) => Promise<void>
-    await expect(hook({ ...EVENT_BASE, tool: "shell", input: { command: "curl http://203.0.113.9/" } })).rejects.toThrow(
-      /denied by operator/,
-    )
+    await expect(
+      hook({ ...EVENT_BASE, tool: "shell", input: { command: "curl http://scanme.nmap.org/" } }),
+    ).rejects.toThrow(/denied by operator/)
   })
 
   test("strict: no dialog, direct block", async () => {

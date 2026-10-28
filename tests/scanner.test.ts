@@ -70,10 +70,12 @@ describe("runScan scope enforcement", () => {
     expect(res.stdout).toContain("10.0.0.5")
   })
 
-  test("out-of-scope host throws ScopeError", () => {
-    expect(
-      runScan(configDir, { mode: "portscan", target: "203.0.113.9" }, okRun),
+  test("out-of-scope domain throws ScopeError; IPs are not fence-checked", async () => {
+    await expect(
+      runScan(configDir, { mode: "portscan", target: "scanme.nmap.org" }, okRun),
     ).rejects.toBeInstanceOf(ScopeError)
+    const ip = await runScan(configDir, { mode: "portscan", target: "203.0.113.9" }, okRun)
+    expect(ip.command).toContain("203.0.113.9")
   })
 
   test("missing scope fails closed (RF#5)", () => {
@@ -91,10 +93,16 @@ describe("runScan scope enforcement", () => {
 })
 
 describe("extra argv scope enforcement (review fix)", () => {
-  test("out-of-scope URL smuggled via extra is refused", () => {
-    expect(
-      runScan(configDir, { mode: "techscan", target: "https://sub.example.test", extra: ["http://169.254.169.254/"] }, okRun),
+  test("out-of-scope domain URL smuggled via extra is refused; IP extras pass (operator responsible)", async () => {
+    await expect(
+      runScan(configDir, { mode: "techscan", target: "https://sub.example.test", extra: ["http://scanme.nmap.org/"] }, okRun),
     ).rejects.toBeInstanceOf(ScopeError)
+    const ip = await runScan(
+      configDir,
+      { mode: "portscan", target: "10.0.0.5", extra: ["http://169.254.169.254/"] },
+      okRun,
+    )
+    expect(ip.exitCode).toBe(0)
   })
 
   test("input-file list flags are refused", () => {
