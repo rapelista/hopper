@@ -1,6 +1,6 @@
 import { createSignal, For, Show } from "solid-js"
 import { Hopper, type FindingSummary, type OperationStatusResult } from "../rpc"
-import { LIFECYCLE, cycleStatus, severityToken, statusInitial } from "./format"
+import { LIFECYCLE, cycleStatus, severityToken, statusInitial, severityShort } from "./format"
 import { resolveToken, resolveActiveBackground, type HopperTheme } from "./theme"
 import type { HopperRpcClient } from "./status"
 
@@ -131,11 +131,13 @@ function LedgerPanel(props: { ctx: PanelCtx; model: () => PanelModel }) {
           <For each={items()}>
             {(f) => (
               <box flexDirection="row" gap={1}>
-                <text fg={resolveToken(theme, severityToken(f.severity))} flexShrink={0}>
-                  [{f.severity}]
+                <text fg={resolveToken(theme, severityToken(f.severity))} flexShrink={0} wrapMode="none">
+                  {`[${severityShort(f.severity)}]`}
                 </text>
-                <text fg={base} wrapMode="none" truncate flexGrow={1}>
-                  {f.title}
+                {/* title column: always grows so the target column stays aligned
+                    even when a finding has no title and the row is URL-only */}
+                <text fg={base} wrapMode="none" truncate flexGrow={1} minWidth={0}>
+                  {f.title || " "}
                 </text>
                 <text fg={muted} wrapMode="none" truncate flexShrink={0}>
                   {f.target}

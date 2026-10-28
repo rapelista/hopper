@@ -37,6 +37,11 @@ export function statusInitial(status: string): string {
   return STATUS_INITIAL[status] ?? (status[0]?.toUpperCase() || "?")
 }
 
+/** Uniform 3-letter severity badge: cri/hig/med/low/inf — keeps the ledger column aligned. */
+export function severityShort(severity: string): string {
+  return severity.slice(0, 3).toLowerCase()
+}
+
 /** The operation banner: `hop · <name> → <target> · <opsec>` (+ counts when any exist). */
 export function bannerText(m: {
   operation: OperationStatusResult["operation"]

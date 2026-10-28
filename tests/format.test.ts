@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { bannerText, compactCounts, groupFindings, severityToken, defaultOperationName, statusInitial } from "../src/tui/format"
+import { bannerText, compactCounts, groupFindings, severityToken, defaultOperationName, statusInitial, severityShort } from "../src/tui/format"
 import type { FindingsCounts, FindingSummary, OperationSummary } from "../src/rpc"
 
 const counts = (over: Partial<FindingsCounts> = {}): FindingsCounts => ({
@@ -99,6 +99,20 @@ describe("severityToken", () => {
     expect(severityToken("low")).toBe("base")
     expect(severityToken("info")).toBe("muted")
     expect(severityToken("whatever")).toBe("muted")
+  })
+})
+
+describe("severityShort", () => {
+  test("uniform 3-letter badges: cri/hig/med/low/inf", () => {
+    expect(severityShort("critical")).toBe("cri")
+    expect(severityShort("high")).toBe("hig")
+    expect(severityShort("medium")).toBe("med")
+    expect(severityShort("low")).toBe("low")
+    expect(severityShort("info")).toBe("inf")
+  })
+  test("unknown severity still yields a 3-char badge", () => {
+    expect(severityShort("whatever")).toBe("wha")
+    expect(severityShort("x")).toBe("x")
   })
 })
 
