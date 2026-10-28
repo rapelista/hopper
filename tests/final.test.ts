@@ -16,7 +16,9 @@ describe("README", () => {
   test("documents authorized use and safety design", () => {
     expect(readme.toLowerCase()).toContain("authorized")
     expect(readme.toLowerCase()).toContain("fail-closed")
-    expect(readme.toLowerCase()).toContain("metadata")
+    // SSRF guard intentionally removed — the README must say so plainly.
+    expect(readme.toLowerCase()).toContain("ssrf guard was removed intentionally")
+    expect(readme.toLowerCase()).toContain("operator is consciously responsible")
   })
 
   test("credits opencode", () => {

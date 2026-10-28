@@ -121,6 +121,7 @@ function makeMockCtx(projectDir: string, permission?: {
   assert: (input: unknown) => Promise<void>
 }) {
   const addedTools: Array<{ name: string; description: string; input: unknown; execute: unknown }> = []
+  const addedSkills: Array<{ id: string; name: string; description?: string; path: string; content: string }> = []
   const toolHooks: Record<string, (event: unknown) => unknown> = {}
   const sessionHooks: Record<string, (event: unknown) => unknown> = {}
   const reg = { dispose: async () => {} }
@@ -131,6 +132,13 @@ function makeMockCtx(projectDir: string, permission?: {
     update: () => {},
     remove: () => {},
     namespace: () => {},
+  }
+  const skillEditor = {
+    list: () => [],
+    get: () => undefined,
+    add: (s: { id: string; name: string; description?: string; path: string; content: string }) => addedSkills.push(s),
+    update: () => {},
+    remove: () => {},
   }
   const ctx = {
     location: { directory: projectDir, project: { id: "p", directory: projectDir, canonical: projectDir } },
@@ -145,6 +153,13 @@ function makeMockCtx(projectDir: string, permission?: {
       },
       list: async () => [],
     },
+    skill: {
+      transform: async (cb: (e: typeof skillEditor) => void) => {
+        cb(skillEditor)
+        return reg
+      },
+      reload: async () => {},
+    },
     session: {
       hook: async (name: string, cb: (event: unknown) => unknown) => {
         sessionHooks[name] = cb
@@ -153,7 +168,7 @@ function makeMockCtx(projectDir: string, permission?: {
     },
     ...(permission ? { permission } : {}),
   }
-  return { ctx, addedTools, toolHooks, sessionHooks }
+  return { ctx, addedTools, addedSkills, toolHooks, sessionHooks }
 }
 
 const EVENT_BASE = {
@@ -205,6 +220,24 @@ describe("hopper v2 plugin", () => {
     expect(typeof toolHooks["execute.before"]).toBe("function")
     expect(typeof sessionHooks["context"]).toBe("function")
     if (typeof cleanup === "function") await cleanup
+  })
+
+  test("setup bundles the runbook skills with the plugin", async () => {
+    const { ctx, addedSkills } = makeMockCtx(tmpProject)
+    await (hopperPlugin as { setup: (ctx: unknown) => Promise<unknown> }).setup(ctx)
+    expect(addedSkills.map((s) => s.id).sort()).toEqual(
+      ["appsec-web-triage", "forensics-kit", "passive-osint", "web-surface"].sort(),
+    )
+    for (const s of addedSkills) {
+      expect(s.path).toMatch(/\.opencode\/skills\/[^/]+\/SKILL\.md$/)
+      expect(s.content.length).toBeGreaterThan(100)
+      expect(s.content.startsWith("---")).toBe(false) // content is the body, frontmatter stripped
+      expect(s.description?.length).toBeGreaterThan(10)
+      expect(s.name.length).toBeGreaterThan(2)
+    }
+    const osint = addedSkills.find((s) => s.id === "passive-osint")!
+    expect(osint.content).toContain("# Passive OSINT kit")
+    expect(osint.name).toBe("passive-osint")
   })
 
   test("execute.before blocks shell command hitting the metadata IP", async () => {

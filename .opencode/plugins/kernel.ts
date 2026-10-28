@@ -1,4 +1,6 @@
-import { Plugin } from "@opencode/plugin"
+import { Plugin, Skill } from "@opencode/plugin"
+import { existsSync, readdirSync, readFileSync } from "node:fs"
+import { join } from "node:path"
 import { bashScopeGuard } from "../lib/guard"
 import { buildTools } from "../lib/tools"
 import { loadScope, checkUrl } from "../lib/scope"
@@ -6,6 +8,45 @@ import { HopperStore } from "../lib/store"
 
 export { bashScopeGuard } from "../lib/guard"
 export { buildTools } from "../lib/tools"
+
+/** Repo root = two levels up from this file (.opencode/plugins/kernel.ts). */
+const repoRoot = join(import.meta.dir, "..", "..")
+
+interface BundledSkill {
+  id: string
+  name: string
+  description?: string
+  path: string
+  content: string
+}
+
+/**
+ * Bundle the runbook skills with the plugin so they are available wherever it
+ * is registered — no config `skills` entry or symlink needed. Mirrors the
+ * native loader's semantics (skill-file.ts): id = directory name, name and
+ * description from frontmatter, content = body with frontmatter stripped.
+ */
+export function loadBundledSkills(skillsDir = join(repoRoot, ".opencode", "skills")): BundledSkill[] {
+  if (!existsSync(skillsDir)) return []
+  const out: BundledSkill[] = []
+  for (const entry of readdirSync(skillsDir, { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue
+    const file = join(skillsDir, entry.name, "SKILL.md")
+    if (!existsSync(file)) continue
+    const raw = readFileSync(file, "utf8")
+    const m = raw.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/)
+    if (!m) continue
+    const front = m[1]!
+    out.push({
+      id: entry.name,
+      name: front.match(/^name:\s*(.+)$/m)?.[1]?.trim() ?? entry.name,
+      description: front.match(/^description:\s*(.+)$/m)?.[1]?.trim(),
+      path: file,
+      content: m[2] ?? "",
+    })
+  }
+  return out
+}
 
 interface ToolBeforeEvent {
   tool: string
@@ -60,6 +101,22 @@ export default Plugin.define({
     await ctx.tool.transform((editor) => {
       for (const tool of buildTools(configDir)) editor.add(tool)
     })
+
+    // 1b. runbook skills bundled with the plugin (travel with it everywhere)
+    const bundledSkills = loadBundledSkills()
+    if (bundledSkills.length > 0) {
+      await ctx.skill.transform((editor) => {
+        for (const s of bundledSkills) {
+          editor.add({
+            id: Skill.ID.make(s.id),
+            name: Skill.Name.make(s.name),
+            ...(s.description ? { description: s.description } : {}),
+            path: Skill.Info.fields.path.make(s.path),
+            content: s.content,
+          })
+        }
+      })
+    }
 
     // 2. runtime guard: shell commands and webfetch stay inside the operation scope.
     //    strict-opsec (scope.strict) hard-blocks; otherwise an out-of-scope target
