@@ -1,6 +1,7 @@
 import { createSignal } from "solid-js"
 import { Hopper, type FindingSummary, type OperationStatusResult } from "../rpc"
 import { groupFindings, severityToken } from "./format"
+import { resolveToken, type HopperTheme } from "./theme"
 import type { HopperRpcClient } from "./status"
 
 /**
@@ -26,7 +27,7 @@ export function buildPanelModel(status: OperationStatusResult | null, findings: 
 export interface PanelCtx {
   ui: { slot: (spec: { append: string; render: (input: { name?: string }) => unknown }) => () => void }
   client: { rpc: (def: unknown) => HopperRpcClient & { findings: (input: { operationId?: string }, options?: { location?: unknown }) => Promise<{ items: FindingSummary[] }> } }
-  theme?: { text: Record<string, string> }
+  theme?: HopperTheme
   location?: unknown
 }
 
@@ -45,14 +46,11 @@ export function registerPanel(ctx: PanelCtx): { cleanup: () => void; model: () =
   }
   void refresh()
 
-  const token = (severity: string) => {
-    const name = severityToken(severity)
-    return ctx.theme?.text[name] ?? ""
-  }
+  const token = (severity: string) => resolveToken(ctx.theme as HopperTheme | undefined, severityToken(severity))
   const groupToken = (status: string) => {
-    if (status === "reportable" || status === "verified") return ctx.theme?.text.base ?? ""
-    if (status === "rejected" || status === "stale") return ctx.theme?.text.muted ?? ""
-    return ctx.theme?.text.warning ?? ""
+    if (status === "reportable" || status === "verified") return resolveToken(ctx.theme as HopperTheme | undefined, "base")
+    if (status === "rejected" || status === "stale") return resolveToken(ctx.theme as HopperTheme | undefined, "muted")
+    return resolveToken(ctx.theme as HopperTheme | undefined, "warning")
   }
 
   const stops = [

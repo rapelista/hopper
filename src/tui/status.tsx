@@ -1,7 +1,8 @@
-import { createSignal } from "solid-js"
+import { createSignal, For } from "solid-js"
 import { Hopper, type OperationStatusResult } from "../rpc"
-import { bannerText, compactCounts } from "./format"
+import { bannerText, LIFECYCLE } from "./format"
 import { currentSession } from "./current-session"
+import { resolveToken, type HopperTheme } from "./theme"
 
 /**
  * Surface 1 — the operation banner. The always-visible context strip Hopper's
@@ -19,7 +20,7 @@ export interface StatusCtx {
   ui: { slot: (spec: { append: string; render: (input?: { sessionID?: string }) => unknown }) => () => void }
   client: { rpc: (def: unknown) => HopperRpcClient }
   data: { on: (name: string, cb: (event: { data: unknown }) => void) => () => void }
-  theme?: { text: Record<string, string> }
+  theme?: HopperTheme
   /** rpc calls must carry the plugin's location or the server consults its default registry */
   location?: unknown
 }
@@ -46,23 +47,50 @@ export function registerStatus(ctx: StatusCtx): { cleanup: () => void; status: (
   }
   const fg = () => {
     const s = status()
-    if (s === null || s.operation === null) return ctx.theme?.text.muted ?? ""
-    return s.opsec === "strict" ? ctx.theme?.text.error ?? "" : ctx.theme?.text.base ?? ""
+    if (s === null || s.operation === null) return resolveToken(ctx.theme, "muted")
+    return s.opsec === "strict" ? resolveToken(ctx.theme, "error") : resolveToken(ctx.theme, "base")
   }
 
-  /** The sidebar block: a stacked, wider-friendly rendition of the banner. */
-  const renderSidebarBlock = (s: OperationStatusResult | null, theme?: { text: Record<string, string> }) => {
+  /** The sidebar block — MCP-list idiom: bold section headers, label/count rows. */
+  const renderSidebarBlock = (s: OperationStatusResult | null) => {
+    const theme = ctx.theme as HopperTheme | undefined
+    const base = resolveToken(theme, "base")
+    const muted = resolveToken(theme, "muted")
     if (s === null || s.operation === null) {
-      return <text fg={theme?.text.muted ?? ""}>hop · no operation</text>
+      return <text fg={muted}>hop · no operation</text>
     }
-    const counts = compactCounts(s.findings)
     return (
       <box flexDirection="column">
-        <text fg={s.opsec === "strict" ? theme?.text.error ?? "" : theme?.text.base ?? ""}>
-          {`hop · ${s.operation.name}`}
+        <box flexDirection="row" gap={1}>
+          <text fg={base} flexGrow={1}>
+            <b>Operation</b>
+          </text>
+          <text fg={s.opsec === "strict" ? resolveToken(theme, "error") : muted} wrapMode="none" flexShrink={0}>
+            {s.opsec}
+          </text>
+        </box>
+        <text fg={base} wrapMode="none" truncate>
+          {s.operation.name}
         </text>
-        <text fg={theme?.text.muted ?? ""}>{s.operation.target}</text>
-        <text fg={theme?.text.muted ?? ""}>{counts === "" ? s.opsec : `${s.opsec} · ${counts}`}</text>
+        <text fg={muted} wrapMode="none" truncate>
+          {s.operation.target}
+        </text>
+        <text> </text>
+        <text fg={base}>
+          <b>Ledger</b>
+        </text>
+        <For each={LIFECYCLE}>
+          {(lifecycle) => (
+            <box flexDirection="row" gap={1}>
+              <text fg={base} flexGrow={1} wrapMode="none" truncate>
+                {lifecycle[0]!.toUpperCase() + lifecycle.slice(1)}
+              </text>
+              <text fg={muted} wrapMode="none" flexShrink={0}>
+                {String(s.findings[lifecycle as keyof typeof s.findings] ?? 0)}
+              </text>
+            </box>
+          )}
+        </For>
       </box>
     )
   }
@@ -78,7 +106,7 @@ export function registerStatus(ctx: StatusCtx): { cleanup: () => void; status: (
       // home and the most reliable "current session" source.
       render: (input?: { sessionID?: string }) => {
         if (input?.sessionID) currentSession.set(input.sessionID)
-        return renderSidebarBlock(status(), ctx.theme)
+        return renderSidebarBlock(status())
       },
     }),
     ctx.ui.slot({
