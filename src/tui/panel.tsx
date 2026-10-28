@@ -1,21 +1,22 @@
-import { createSignal, For, Show, onMount, onCleanup } from "solid-js"
+import { createSignal, For, Show } from "solid-js"
 import { Hopper, type FindingSummary, type OperationStatusResult } from "../rpc"
 import { LIFECYCLE, cycleStatus, severityToken, statusInitial, severityShort } from "./format"
 import { resolveToken, resolveActiveBackground, type HopperTheme } from "./theme"
 import type { HopperRpcClient } from "./status"
 
 /**
- * Surface 2 — the findings ledger as a modal dialog. Hopper: "The TUI is the
- * ledger." Wider canvas than the side panel (tabs never squeeze), escape closes
- * natively, and the tab state is a local component signal — the pattern proven
- * to update plugin UI here. left/right cycle, 1–6 jump, click a tab to switch.
+ * Surface 2 — the findings ledger panel, tabbed per lifecycle status.
+ * Hopper: "The TUI is the ledger." Tab bar + list; left/right cycle,
+ * 1–6 jump, click a tab to switch. The keymap layer is created inside the
+ * component, so it lives and dies with the panel and only fires while the
+ * panel owns input (diff-viewer idiom).
  */
 
 export interface PanelModel {
   operation: OperationStatusResult["operation"]
   opsec: OperationStatusResult["opsec"]
   groups: Array<{ status: string; items: FindingSummary[] }>
-  /** every lifecycle bucket, empty ones included — the dialog's tab source */
+  /** every lifecycle bucket, empty ones included — the panel's tab source */
   byStatus: Record<string, FindingSummary[]>
 }
 
@@ -30,30 +31,25 @@ export function buildPanelModel(status: OperationStatusResult | null, findings: 
   }
 }
 
-export interface LedgerCtx {
-  ui: {
-    dialog: {
-      set: (options: { size?: "large" | "xlarge"; centered?: boolean }) => void
-      show: (render: () => unknown, onClose?: () => void) => void
-    }
-  }
+export interface PanelCtx {
+  ui: { slot: (spec: { append: string; render: (input: { name?: string }) => unknown }) => () => void }
   client: { rpc: (def: unknown) => HopperRpcClient & { findings: (input: { operationId?: string }, options?: { location?: unknown }) => Promise<{ items: FindingSummary[] }> } }
   keymap?: { layer: (layer: unknown) => () => void }
   theme?: HopperTheme
   location?: unknown
 }
 
-export function registerLedger(ctx: LedgerCtx): { cleanup: () => void; open: () => void; model: () => PanelModel | null } {
+export function registerPanel(ctx: PanelCtx): { cleanup: () => void; model: () => PanelModel } {
   const rpc = ctx.client.rpc(Hopper)
   const opts = () => (ctx.location === undefined ? {} : { location: ctx.location })
-  const [model, setModel] = createSignal<PanelModel | null>(null)
+  const [model, setModel] = createSignal<PanelModel>(buildPanelModel(null, []))
 
   const refresh = async () => {
     try {
       const [status, findings] = await Promise.all([rpc.operationStatus({}, opts()), rpc.findings({}, opts())])
       setModel(buildPanelModel(status, findings.items))
     } catch (err) {
-      console.error("[hopper-tui] ledger refresh failed:", err)
+      console.error("[hopper-tui] panel refresh failed:", err)
     }
   }
   void refresh()
@@ -61,48 +57,38 @@ export function registerLedger(ctx: LedgerCtx): { cleanup: () => void; open: () 
   const stops = [
     rpc.events.on("operation.changed", () => void refresh()),
     rpc.events.on("finding.changed", () => void refresh()),
+    ctx.ui.slot({
+      append: "session.panel",
+      render: (panel: { name?: string }) =>
+        panel.name === "hopper.ledger" ? <LedgerPanel ctx={ctx} model={model} /> : null,
+    }),
   ]
 
-  const open = () => {
-    try {
-      // upstream order (btw.tsx): show first, then set — set() applies to the ACTIVE dialog
-      ctx.ui.dialog.show(() => <LedgerDialog ctx={ctx} model={model} />)
-      ctx.ui.dialog.set({ size: "xlarge", centered: true })
-    } catch (err) {
-      console.error("[hopper-tui] ledger dialog failed to open:", err)
-    }
-  }
-
-  return { open, model, cleanup: () => stops.forEach((stop) => stop()) }
+  return { model, cleanup: () => stops.forEach((stop) => stop()) }
 }
 
-function LedgerDialog(props: { ctx: LedgerCtx; model: () => PanelModel | null }) {
+function LedgerPanel(props: { ctx: PanelCtx; model: () => PanelModel }) {
   const theme = props.ctx.theme
   const base = resolveToken(theme, "base")
   const muted = resolveToken(theme, "muted")
   const activeBg = resolveActiveBackground(theme)
   const [tab, setTab] = createSignal<string>("candidate")
 
-  // Dialog-scoped keymap: created after mount (never during render — no
-  // upstream dialog creates layers inline), disposed with the dialog
-  onMount(() => {
-    const stop = props.ctx.keymap?.layer(() => ({
-      commands: [
-        { id: "hopper.ledger.tab.next", bind: "right", title: "Next lifecycle tab", run: () => setTab((t) => cycleStatus(t, 1)) },
-        { id: "hopper.ledger.tab.prev", bind: "left", title: "Previous lifecycle tab", run: () => setTab((t) => cycleStatus(t, -1)) },
-        ...LIFECYCLE.map((status, i) => ({
-          id: `hopper.ledger.tab.${i + 1}`,
-          bind: String(i + 1),
-          title: `Jump to ${status}`,
-          run: () => setTab(status),
-        })),
-      ],
-    }))
-    if (stop) onCleanup(stop)
-  })
+  // Panel-scoped keymap: created in the component, disposed with it (diff-viewer idiom)
+  props.ctx.keymap?.layer(() => ({
+    commands: [
+      { id: "hopper.ledger.tab.next", bind: "right", title: "Next lifecycle tab", run: () => setTab((t) => cycleStatus(t, 1)) },
+      { id: "hopper.ledger.tab.prev", bind: "left", title: "Previous lifecycle tab", run: () => setTab((t) => cycleStatus(t, -1)) },
+      ...LIFECYCLE.map((status, i) => ({
+        id: `hopper.ledger.tab.${i + 1}`,
+        bind: String(i + 1),
+        title: `Jump to ${status}`,
+        run: () => setTab(status),
+      })),
+    ],
+  }))
 
-  const m = () => props.model() ?? buildPanelModel(null, [])
-  const items = () => m().byStatus[tab()] ?? []
+  const items = () => props.model().byStatus[tab()] ?? []
 
   const tabBar = (
     <box flexDirection="row" gap={1} flexShrink={0} flexWrap="wrap" columnGap={1}>
@@ -113,10 +99,10 @@ function LedgerDialog(props: { ctx: LedgerCtx; model: () => PanelModel | null })
             paddingRight={1}
             flexShrink={0}
             backgroundColor={tab() === status ? activeBg : undefined}
-            onMouseUp={() => setTab(status)}
+            onMouseDown={() => setTab(status)}
           >
             <text fg={tab() === status ? base : muted} wrapMode="none">
-              {`${statusInitial(status)}${m().byStatus[status]!.length}`}
+              {`${statusInitial(status)}${props.model().byStatus[status]!.length}`}
             </text>
           </box>
         )}
@@ -125,7 +111,7 @@ function LedgerDialog(props: { ctx: LedgerCtx; model: () => PanelModel | null })
   )
 
   return (
-    <box flexDirection="column" paddingTop={1} paddingBottom={1} paddingLeft={2} paddingRight={2}>
+    <box flexDirection="column" width="100%" height="100%" paddingTop={1} paddingBottom={1} paddingLeft={2} paddingRight={2}>
       <box flexDirection="row" gap={1}>
         <text fg={base} flexGrow={1} wrapMode="none" truncate>
           <b>Ledger</b>
@@ -136,7 +122,10 @@ function LedgerDialog(props: { ctx: LedgerCtx; model: () => PanelModel | null })
       </box>
       <text> </text>
       {tabBar}
-      <Show when={m().operation} fallback={<text fg={muted}>no active operation — start one with /pwn</text>}>
+      <Show
+        when={props.model().operation}
+        fallback={<text fg={muted}>no active operation — start one with /pwn</text>}
+      >
         <text> </text>
         <Show when={items().length > 0} fallback={<text fg={muted}>{`no ${tab()} findings`}</text>}>
           <For each={items()}>
@@ -150,6 +139,7 @@ function LedgerDialog(props: { ctx: LedgerCtx; model: () => PanelModel | null })
                     {f.title || " "}
                   </text>
                 </box>
+                {/* URL aligned under the title: badge width (5) + gap (1) */}
                 <box paddingLeft={6}>
                   <text fg={muted} wrapMode="none" truncate flexGrow={1} minWidth={0}>
                     {f.target}
