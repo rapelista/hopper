@@ -1,5 +1,6 @@
 import { Hopper, type OperationSummary } from "../rpc"
 import { defaultOperationName } from "./format"
+import { currentSession } from "./current-session"
 import type { HopperRpcClient } from "./status"
 
 /**
@@ -49,10 +50,10 @@ export interface CommandsCtx {
 export function registerCommands(ctx: CommandsCtx): { cleanup: () => void } {
   const rpc = ctx.client.rpc(Hopper)
   const opts = () => (ctx.location === undefined ? {} : { location: ctx.location })
-  let currentSessionID: string | undefined
+  // secondary source: the prompt footer's slot input (see current-session.ts) is primary
   const stopTrack = ctx.data.on("tui.session.select", (event) => {
     const data = event.data as { sessionID?: string } | undefined
-    if (data?.sessionID) currentSessionID = data.sessionID
+    if (data?.sessionID) currentSession.set(data.sessionID)
   })
 
   const runPwn = async (input?: string) => {
@@ -88,7 +89,8 @@ export function registerCommands(ctx: CommandsCtx): { cleanup: () => void } {
       message: `Operation ${created.operation.name} active — target ${created.operation.target}`,
       variant: "success",
     })
-    if (currentSessionID === undefined) {
+    const sessionID = currentSession.get()
+    if (sessionID === undefined) {
       ctx.ui.toast.show({
         title: "Hopper",
         message: "Operation active — open a session and ask for the kickoff plan",
@@ -96,7 +98,7 @@ export function registerCommands(ctx: CommandsCtx): { cleanup: () => void } {
       })
       return
     }
-    await ctx.session.prompt({ sessionID: currentSessionID, text: buildKickoffPrompt(created.operation.name, created.operation.target) })
+    await ctx.session.prompt({ sessionID, text: buildKickoffPrompt(created.operation.name, created.operation.target) })
   }
 
   const runOpsec = async () => {

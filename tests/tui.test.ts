@@ -3,6 +3,7 @@ import { registerStatus } from "../src/tui/status"
 import { buildPanelModel } from "../src/tui/panel"
 import { parsePwnArgument, buildKickoffPrompt, registerCommands } from "../src/tui/commands"
 import { registerNotifications } from "../src/tui/notifications"
+import { currentSession } from "../src/tui/current-session"
 import type { FindingSummary, OperationStatusResult } from "../src/rpc"
 
 const status: OperationStatusResult = {
@@ -197,6 +198,7 @@ describe("commands module (registration)", () => {
   })
 
   test("pwn without a current session: still creates, hints instead of submitting", async () => {
+    currentSession.reset()
     const c = commandsCtx()
     registerCommands(c.ctx as never)
     const pwn = commandsOf(c).find((cmd) => cmd.id === "hopper.pwn")!

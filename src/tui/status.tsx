@@ -1,6 +1,7 @@
 import { createSignal } from "solid-js"
 import { Hopper, type OperationStatusResult } from "../rpc"
 import { bannerText } from "./format"
+import { currentSession } from "./current-session"
 
 /**
  * Surface 1 — the operation banner. The always-visible context strip Hopper's
@@ -15,7 +16,7 @@ export interface HopperRpcClient {
 }
 
 export interface StatusCtx {
-  ui: { slot: (spec: { append: string; render: () => unknown }) => () => void }
+  ui: { slot: (spec: { append: string; render: (input?: { sessionID?: string }) => unknown }) => () => void }
   client: { rpc: (def: unknown) => HopperRpcClient }
   data: { on: (name: string, cb: (event: { data: unknown }) => void) => () => void }
   theme?: { text: Record<string, string> }
@@ -56,7 +57,12 @@ export function registerStatus(ctx: StatusCtx): { cleanup: () => void; status: (
     ctx.data.on("session.execution.succeeded", () => void refresh()),
     ctx.ui.slot({
       append: "prompt.footer.status",
-      render: () => <text fg={fg()}>{line()}</text>,
+      // PromptFooterInput carries the sessionID of the session whose prompt is
+      // rendered — the most reliable "current session" source there is.
+      render: (input?: { sessionID?: string }) => {
+        if (input?.sessionID) currentSession.set(input.sessionID)
+        return <text fg={fg()}>{line()}</text>
+      },
     }),
     ctx.ui.slot({
       append: "home.footer.status",
