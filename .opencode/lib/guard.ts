@@ -1,6 +1,6 @@
 import { isInScope, type Scope } from "./scope"
 
-export type GuardResult = { ok: true } | { ok: false; reason: string }
+export type GuardResult = { ok: true } | { ok: false; reason: string; violations: string[] }
 
 const IPV4_RE = /(?<![:\w.])(\d{1,3}(?:\.\d{1,3}){3})(?![\w.])/g
 const URL_RE = /https?:\/\/[^\s"'`]+/g
@@ -81,7 +81,10 @@ function extractTargets(command: string): Extracted {
   // A token immediately preceded by "/" is a path segment, never a host:
   // hostnames cannot contain "/", so `ftp/eastere.gg`, `./encrypt.pyc`, or
   // `conf/8.8.8.8` are filenames in an argument list or shell loop, not targets.
+  // A dotted token immediately followed by "(" is a method call in inline code
+  // (`json.load(`, `d.get(`), never a host.
   const isPathSegment = (idx: number) => idx > 0 && work[idx - 1] === "/"
+  const isCallSite = (endIdx: number) => work[endIdx] === "("
 
   for (const m of work.matchAll(IPV4_RE)) {
     if (isPathSegment(m.index)) continue
@@ -95,6 +98,7 @@ function extractTargets(command: string): Extracted {
 
   for (const m of work.matchAll(DOMAIN_RE)) {
     if (isPathSegment(m.index)) continue
+    if (isCallSite(m.index + m[0].length)) continue
     const token = m[1]!
     if (FILE_EXT_RE.test(token)) continue
     if (/^\d/.test(token)) continue
@@ -106,8 +110,8 @@ function extractTargets(command: string): Extracted {
 
 export function bashScopeGuard(scope: Scope | null, command: string): GuardResult {
   if (scope === null) return { ok: true } // the permission system still gates every call
-  const violations: string[] = []
   const { ips, hosts } = extractTargets(command)
+  const violations: string[] = []
   for (const ip of ips) {
     const n = parseIpToken(ip)
     if (isInScope(scope, ip)) continue
@@ -122,6 +126,7 @@ export function bashScopeGuard(scope: Scope | null, command: string): GuardResul
   if (violations.length > 0) {
     return {
       ok: false,
+      violations,
       reason: `scope guard: refusing out-of-scope target(s) ${violations.join(", ")} — allowed: ${scope.targets.join(", ")}`,
     }
   }

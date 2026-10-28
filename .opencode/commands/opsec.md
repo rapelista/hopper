@@ -11,5 +11,7 @@ The operator wants to review or change the opsec posture.
    - No third-party lookups that would leak the target (Shodan, crt.sh, urlscan, VT, sandbox submissions).
    - Stay on-target or use local data.
    - Tools that cannot comply must be skipped, not worked around.
+   - Out-of-scope targets are hard-blocked — no dialog, no escape.
+4. Under **non-strict**, state the difference: an out-of-scope target raises the operator's allow/deny dialog (`scope-escape`) — approve once, always for that host, or deny. The scope fence still asks; it just does not decide alone.
 
 Keep the summary terse: current posture, target boundary, what changed.

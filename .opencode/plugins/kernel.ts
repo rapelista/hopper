@@ -9,6 +9,10 @@ export { buildTools } from "../lib/tools"
 
 interface ToolBeforeEvent {
   tool: string
+  sessionID: string
+  agent: string
+  messageID: string
+  id: string
   input: unknown
 }
 
@@ -58,15 +62,19 @@ export default Plugin.define({
     })
 
     // 2. runtime guard: shell commands and webfetch stay inside the operation scope.
-    //    Throwing from execute.before rejects the call before it runs.
+    //    strict-opsec (scope.strict) hard-blocks; otherwise an out-of-scope target
+    //    raises the native allow/deny dialog via ctx.permission.assert — the operator
+    //    decides (once / always-for-this-host / deny). Throwing rejects the call.
     await ctx.tool.hook("execute.before", async (event: ToolBeforeEvent) => {
+      let scope: ReturnType<typeof loadScope> = null
+      let violation: { reason: string; violations: string[] } | null = null
       try {
-        const scope = loadScope(configDir)
+        scope = loadScope(configDir)
         if (SHELL_TOOLS.has(event.tool)) {
           const command = (event.input as { command?: unknown } | undefined)?.command
           if (typeof command === "string") {
             const guard = bashScopeGuard(scope, command)
-            if (!guard.ok) throw new Error(guard.reason)
+            if (!guard.ok) violation = { reason: guard.reason, violations: guard.violations }
           }
         }
         if (event.tool === "webfetch" && scope !== null) {
@@ -78,7 +86,29 @@ export default Plugin.define({
         if ((err as { name?: string })?.name === "ScopeError") throw err
         // unexpected guard errors must never crash the host
         console.error("[hopper-kernel] guard error:", err)
+        return
       }
+      if (!violation) return
+
+      if (scope?.strict) throw new Error(violation.reason) // strict-opsec: no dialog, no escape
+
+      const assert = (ctx as { permission?: { assert?: (input: unknown) => Promise<void> } }).permission?.assert
+      if (!assert) throw new Error(violation.reason) // no dialog API available → fail-closed
+
+      // Operator decision. Deny rejects with a Tool.Error the model sees; allow proceeds.
+      // Deliberately outside the swallowing try/catch above — a denial must block the call.
+      await assert.call(
+        ctx.permission,
+        {
+          sessionID: event.sessionID,
+          agent: event.agent,
+          source: { type: "tool", messageID: event.messageID, id: event.id },
+          action: "scope-escape",
+          resources: violation.violations,
+          save: violation.violations,
+          metadata: { reason: violation.reason },
+        },
+      )
     })
 
     // 3. operation context on every agent-loop model call (system block)

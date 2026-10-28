@@ -77,6 +77,22 @@ describe("bashScopeGuard", () => {
     expect(bashScopeGuard(scope(["10.0.0.0/8"]), "nmap 10.1.2.3").ok).toBe(true)
   })
 
+  test("code tokens with method calls are not hosts (python -c repro)", () => {
+    const sc = scope(["localhost"])
+    const repro =
+      'python3 -c "\nimport json;d=json.load(open(\'/tmp/js-mnt/challenges.json\'));c=d.get(\'data\',d)\nprint(\'total:\',len(c))\nfor x in sorted(c,key=lambda z:z[\'difficulty\']):\n    print(x[\'difficulty\'], \'|\', x[\'name\'], \'| solved:\', x.get(\'solved\'), \'| flag\' if x.get(\'cfFlag\') or (\'ctf\' in str(x).lower()) else \'\')" 2>&1 | head -70'
+    expect(bashScopeGuard(sc, repro).ok).toBe(true)
+  })
+
+  test("dotted tokens immediately followed by an open paren are skipped", () => {
+    expect(bashScopeGuard(scope(["localhost"]), 'python3 -c "import os; print(os.path.join(\'/a\',\'b\'))"').ok).toBe(true)
+    expect(bashScopeGuard(scope(["localhost"]), 'python3 -c "import json;print(json.dumps({}))"').ok).toBe(true)
+  })
+
+  test("hosts not followed by open paren are still blocked (regression)", () => {
+    expect(bashScopeGuard(scope(["example.test"]), "nmap scanme.nmap.org").ok).toBe(false)
+  })
+
   test("relative path segments in shell loops are not hosts (juice-shop repro)", () => {
     const sc = scope(["localhost"])
     const repro =
@@ -102,7 +118,9 @@ describe("bashScopeGuard", () => {
 })
 
 /** Minimal v2 plugin-context mock capturing registrations. */
-function makeMockCtx(projectDir: string) {
+function makeMockCtx(projectDir: string, permission?: {
+  assert: (input: unknown) => Promise<void>
+}) {
   const addedTools: Array<{ name: string; description: string; input: unknown; execute: unknown }> = []
   const toolHooks: Record<string, (event: unknown) => unknown> = {}
   const sessionHooks: Record<string, (event: unknown) => unknown> = {}
@@ -134,8 +152,23 @@ function makeMockCtx(projectDir: string) {
         return reg
       },
     },
+    ...(permission ? { permission } : {}),
   }
   return { ctx, addedTools, toolHooks, sessionHooks }
+}
+
+const EVENT_BASE = {
+  sessionID: "ses_test",
+  agent: "pentest",
+  messageID: "msg_test",
+  id: "call_test",
+}
+
+function writeScopeFixure(strict: boolean) {
+  writeFileSync(
+    join(configDir, "scope.json"),
+    JSON.stringify({ targets: ["example.test"], strict, created: "x" }),
+  )
 }
 
 const EXPECTED_TOOLS = [
@@ -176,16 +209,78 @@ describe("hopper v2 plugin", () => {
   })
 
   test("execute.before blocks shell command hitting the metadata IP", async () => {
-    writeFileSync(
-      join(configDir, "scope.json"),
-      JSON.stringify({ targets: ["example.test"], strict: true, created: "x" }),
-    )
+    writeScopeFixure(true)
     const { ctx, toolHooks } = makeMockCtx(tmpProject)
     await (hopperPlugin as { setup: (ctx: unknown) => Promise<unknown> }).setup(ctx)
-    const hook = toolHooks["execute.before"]! as (event: { tool: string; input: unknown }) => Promise<void>
-    const violation = hook({ tool: "shell", input: { command: "curl http://169.254.169.254/" } })
+    const hook = toolHooks["execute.before"]! as (event: unknown) => Promise<void>
+    const violation = hook({ ...EVENT_BASE, tool: "shell", input: { command: "curl http://169.254.169.254/" } })
     await expect(violation).rejects.toThrow(/169\.254\.169\.254/)
-    await expect(hook({ tool: "shell", input: { command: "curl http://localhost:3000/" } })).resolves.toBeUndefined()
+    await expect(hook({ ...EVENT_BASE, tool: "shell", input: { command: "curl http://localhost:3000/" } })).resolves.toBeUndefined()
+  })
+
+  test("guard result carries the violation list for the dialog", () => {
+    const res = bashScopeGuard(scope(["example.test"]), "curl http://169.254.169.254/")
+    expect(res.ok).toBe(false)
+    if (!res.ok) expect(res.violations).toContain("169.254.169.254")
+  })
+
+  test("non-strict: violation triggers the allow/deny dialog and proceeds on allow", async () => {
+    writeScopeFixure(false)
+    const asserts: unknown[] = []
+    const { ctx, toolHooks } = makeMockCtx(tmpProject, {
+      assert: async (input: unknown) => {
+        asserts.push(input)
+      },
+    })
+    await (hopperPlugin as { setup: (ctx: unknown) => Promise<unknown> }).setup(ctx)
+    const hook = toolHooks["execute.before"]! as (event: unknown) => Promise<void>
+    await expect(
+      hook({ ...EVENT_BASE, tool: "shell", input: { command: "curl http://169.254.169.254/latest/meta-data" } }),
+    ).resolves.toBeUndefined()
+    expect(asserts.length).toBe(1)
+    const a = asserts[0] as Record<string, unknown>
+    expect(a.action).toBe("scope-escape")
+    expect(a.resources).toEqual(["169.254.169.254"])
+    expect(a.save).toEqual(["169.254.169.254"])
+    expect(a.metadata).toMatchObject({ reason: expect.stringContaining("169.254.169.254") })
+  })
+
+  test("non-strict: dialog denial rejects the call", async () => {
+    writeScopeFixure(false)
+    const { ctx, toolHooks } = makeMockCtx(tmpProject, {
+      assert: async () => {
+        throw new Error("denied by operator")
+      },
+    })
+    await (hopperPlugin as { setup: (ctx: unknown) => Promise<unknown> }).setup(ctx)
+    const hook = toolHooks["execute.before"]! as (event: unknown) => Promise<void>
+    await expect(hook({ ...EVENT_BASE, tool: "shell", input: { command: "curl http://2852039166/" } })).rejects.toThrow(
+      /denied by operator/,
+    )
+  })
+
+  test("strict: no dialog, direct block", async () => {
+    writeScopeFixure(true)
+    const { ctx, toolHooks } = makeMockCtx(tmpProject, {
+      assert: async () => {
+        throw new Error("dialog should not fire in strict mode")
+      },
+    })
+    await (hopperPlugin as { setup: (ctx: unknown) => Promise<unknown> }).setup(ctx)
+    const hook = toolHooks["execute.before"]! as (event: unknown) => Promise<void>
+    await expect(hook({ ...EVENT_BASE, tool: "shell", input: { command: "nmap scanme.nmap.org" } })).rejects.toThrow(
+      /scanme\.nmap\.org/,
+    )
+  })
+
+  test("non-strict without permission api stays fail-closed", async () => {
+    writeScopeFixure(false)
+    const { ctx, toolHooks } = makeMockCtx(tmpProject)
+    await (hopperPlugin as { setup: (ctx: unknown) => Promise<unknown> }).setup(ctx)
+    const hook = toolHooks["execute.before"]! as (event: unknown) => Promise<void>
+    await expect(hook({ ...EVENT_BASE, tool: "shell", input: { command: "nmap scanme.nmap.org" } })).rejects.toThrow(
+      /scanme\.nmap\.org/,
+    )
   })
 
   test("session context hook pushes the operation block", async () => {
