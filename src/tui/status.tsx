@@ -17,10 +17,7 @@ export interface HopperRpcClient {
 }
 
 export interface StatusCtx {
-  ui: {
-    slot: (spec: { append: string; render: (input?: { sessionID?: string }) => unknown }) => () => void
-    panel?: { open: (name: string) => boolean }
-  }
+  ui: { slot: (spec: { append: string; render: (input?: { sessionID?: string }) => unknown }) => () => void }
   client: { rpc: (def: unknown) => HopperRpcClient }
   data: { on: (name: string, cb: (event: { data: unknown }) => void) => () => void }
   storage?: { store: <T>(key: string, opts: { initial: T }) => [T, (fn: (draft: T) => T | void) => Promise<void>] }
@@ -109,20 +106,7 @@ export function registerStatus(ctx: StatusCtx): { cleanup: () => void; status: (
         <Show when={ledgerView.get().open}>
           <For each={LIFECYCLE}>
             {(lifecycle) => (
-              <box
-                flexDirection="row"
-                gap={1}
-                onMouseDown={() => {
-                  // aim the ledger panel at this lifecycle, then open it —
-                  // same host-storage key the panel reads (plugin.hopper-tui.ledgerTab)
-                  void ctx.storage
-                    ?.store<{ status: string }>("ledgerTab", { initial: { status: "candidate" } })[1]((draft) => {
-                      draft.status = lifecycle
-                    })
-                    .catch(() => {})
-                  ctx.ui.panel?.open("hopper.ledger")
-                }}
-              >
+              <box flexDirection="row" gap={1}>
                 <text fg={base} flexGrow={1} wrapMode="none" truncate>
                   {lifecycle[0]!.toUpperCase() + lifecycle.slice(1)}
                 </text>
