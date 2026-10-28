@@ -69,7 +69,7 @@ describe("store evidence", () => {
 
 describe("evidence tool shape", () => {
   test("default export has description and execute", () => {
-    const t = evidence as { description: string; execute: (args: Record<string, unknown>) => Promise<string> }
+    const t = evidence as unknown as { description: string; execute: (args: Record<string, unknown>) => Promise<string> }
     expect(t.description.length).toBeGreaterThan(10)
     expect(typeof t.execute).toBe("function")
   })

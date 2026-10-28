@@ -67,7 +67,7 @@ describe("writeReport", () => {
 
 describe("report tool shape", () => {
   test("default export has description and execute", () => {
-    const t = report as { description: string; execute: (args: Record<string, unknown>) => Promise<string> }
+    const t = report as unknown as { description: string; execute: (args: Record<string, unknown>) => Promise<string> }
     expect(t.description.length).toBeGreaterThan(10)
     expect(typeof t.execute).toBe("function")
   })

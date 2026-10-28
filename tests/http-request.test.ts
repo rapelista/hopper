@@ -24,7 +24,7 @@ afterAll(() => {
   rmSync(emptyDir, { recursive: true, force: true })
 })
 
-const ok = (body: string, init?: ResponseInit) => new Response(body, init)
+const ok = (body: string | null, init?: ResponseInit) => new Response(body, init)
 
 describe("http-request scope enforcement", () => {
   test("in-scope 200 returns result with correct sha256", async () => {

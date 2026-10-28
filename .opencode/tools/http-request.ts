@@ -22,6 +22,8 @@ const SENSITIVE_HEADERS = new Set(["authorization", "cookie", "set-cookie", "x-a
 const MAX_HOPS = 5
 const MAX_BODY_CHARS = 64 * 1024
 
+type FetchLike = (url: string, init?: RequestInit) => Promise<Response>
+
 function sha256Hex(data: string | Uint8Array): string {
   const hasher = new Bun.CryptoHasher("sha256")
   hasher.update(data)
@@ -39,7 +41,7 @@ function redactHeaders(headers: Record<string, string>): Record<string, string> 
 export async function request(
   configDir: string,
   opts: RequestOpts,
-  fetchImpl: typeof fetch = fetch,
+  fetchImpl: FetchLike = fetch,
 ): Promise<RequestResult> {
   const hops: string[] = []
   let currentUrl = opts.url
@@ -93,7 +95,7 @@ export default tool({
   args: {
     url: tool.schema.string().describe("Absolute http(s) URL to request (checked against scope)"),
     method: tool.schema.string().optional().describe("HTTP method (default GET)"),
-    headers: tool.schema.record(tool.schema.string()).optional().describe("Request headers"),
+    headers: tool.schema.record(tool.schema.string(), tool.schema.string()).optional().describe("Request headers"),
     body: tool.schema.string().optional().describe("Request body"),
     timeoutMs: tool.schema.number().optional().describe("Timeout in ms (default 30000)"),
   },

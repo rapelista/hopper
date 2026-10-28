@@ -115,5 +115,5 @@ export const HopperKernel: Plugin = async (ctx) => {
         await log("compaction context injection failed", { error: String(err) })
       }
     },
-  } as ReturnType<NonNullable<Plugin>>
+  } as unknown as Awaited<ReturnType<Plugin>>
 }

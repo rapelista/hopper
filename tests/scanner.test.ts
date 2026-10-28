@@ -15,11 +15,11 @@ beforeAll(() => {
   rmSync(configDir, { recursive: true, force: true })
   rmSync(emptyDir, { recursive: true, force: true })
   mkdirSync(configDir, { recursive: true })
-  mkdirSync(emptyDir, { recursive: true, force: true })
+  mkdirSync(emptyDir, { recursive: true })
   saveScope(configDir, { targets: ["*.example.test", "10.0.0.0/8"], strict: true, created: "x" })
   // ensure a wordlist file exists so buildCommand can default to it
   try {
-    writeFileSync(COMMON_WORDLIST, "admin\nbackup\n.git\n", { flag: "r+" })
+    writeFileSync(COMMON_WORDLIST, "admin\nbackup\n.git\n")
   } catch {
     wordlistBackup = "absent"
     writeFileSync(COMMON_WORDLIST, "admin\nbackup\n.git\n")
@@ -92,7 +92,7 @@ describe("runScan scope enforcement", () => {
 
 describe("tool shape", () => {
   test("default export has description covering active recon", () => {
-    const t = scanner as { description: string }
+    const t = scanner as unknown as { description: string }
     expect(t.description.toLowerCase()).toContain("recon")
     expect(t.description.length).toBeGreaterThan(30)
   })

@@ -62,7 +62,7 @@ describe("HopperStore operations", () => {
 
 describe("operation tool shape", () => {
   test("default export has description and execute", () => {
-    const t = operation as { description: string; execute: (args: Record<string, unknown>) => Promise<string> }
+    const t = operation as unknown as { description: string; execute: (args: Record<string, unknown>) => Promise<string> }
     expect(t.description.length).toBeGreaterThan(10)
     expect(typeof t.execute).toBe("function")
   })

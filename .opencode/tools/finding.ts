@@ -1,5 +1,6 @@
 import { tool } from "@opencode-ai/plugin"
 import { HopperStore } from "../lib/store"
+import type { Severity } from "../lib/findings"
 
 export default tool({
   description:
@@ -20,7 +21,7 @@ export default tool({
       .optional()
       .describe("Target status (status)"),
     patch: tool.schema
-      .record(tool.schema.string())
+      .record(tool.schema.string(), tool.schema.string())
       .optional()
       .describe("Alternative patch object for update: {title?, severity?, notes?}"),
   },
@@ -66,7 +67,7 @@ export default tool({
       const patch = args.patch ?? {}
       const f = store.updateFinding(args.findingId, {
         title: patch.title ?? args.title,
-        severity: patch.severity ?? args.severity,
+        severity: (patch.severity as Severity | undefined) ?? args.severity,
         notes: patch.notes ?? args.notes,
       })
       return `Finding ${f.id} updated.`

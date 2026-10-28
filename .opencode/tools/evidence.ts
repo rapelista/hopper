@@ -12,7 +12,7 @@ export default tool({
       .optional()
       .describe("Evidence kind (capture)"),
     content: tool.schema.string().optional().describe("The evidence payload verbatim (capture)"),
-    meta: tool.schema.record(tool.schema.string()).optional().describe("Optional metadata (url, command, source)"),
+    meta: tool.schema.record(tool.schema.string(), tool.schema.string()).optional().describe("Optional metadata (url, command, source)"),
     operationId: tool.schema.string().optional().describe("Operation id (defaults to active)"),
     findingId: tool.schema.string().optional().describe("Finding id (attach, or filter list)"),
     evidenceId: tool.schema.string().optional().describe("Evidence id (attach)"),

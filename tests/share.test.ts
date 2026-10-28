@@ -71,7 +71,7 @@ describe("buildShareBundle", () => {
 
 describe("share tool + remediate command", () => {
   test("share tool has description and execute", () => {
-    const t = share as { description: string; execute: (args: Record<string, unknown>) => Promise<string> }
+    const t = share as unknown as { description: string; execute: (args: Record<string, unknown>) => Promise<string> }
     expect(t.description.length).toBeGreaterThan(10)
     expect(typeof t.execute).toBe("function")
   })

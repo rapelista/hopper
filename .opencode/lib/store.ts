@@ -2,8 +2,10 @@ import { Database } from "bun:sqlite"
 import { mkdirSync } from "node:fs"
 import { join } from "node:path"
 import { saveScope } from "./scope"
-import { assertTransition, type FindingStatus, type Severity } from "./findings"
+import { assertTransition, FindingError, type FindingStatus, type Severity } from "./findings"
 import type { CapturedEvidence, EvidenceKind } from "./evidence"
+
+export type { FindingStatus, Severity }
 
 export interface Evidence extends CapturedEvidence {
   operation_id: string

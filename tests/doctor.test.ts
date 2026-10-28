@@ -20,7 +20,7 @@ describe("checkTools", () => {
 describe("tool shape", () => {
   test("default export is a tool with description and execute", async () => {
     expect(typeof doctor).toBe("object")
-    const t = doctor as { description: string; execute: (args: unknown) => Promise<string> }
+    const t = doctor as unknown as { description: string; execute: (args: unknown) => Promise<string> }
     expect(t.description.length).toBeGreaterThan(10)
     const result = await t.execute({})
     expect(result.toLowerCase()).toContain("nmap")

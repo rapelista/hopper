@@ -85,7 +85,7 @@ describe("store findings", () => {
 
 describe("finding tool shape", () => {
   test("default export has description and execute", () => {
-    const t = finding as { description: string; execute: (args: Record<string, unknown>) => Promise<string> }
+    const t = finding as unknown as { description: string; execute: (args: Record<string, unknown>) => Promise<string> }
     expect(t.description.length).toBeGreaterThan(10)
     expect(typeof t.execute).toBe("function")
   })

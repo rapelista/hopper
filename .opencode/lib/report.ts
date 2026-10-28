@@ -1,7 +1,8 @@
 import { mkdirSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { HopperStore } from "./store"
-import type { Finding, Severity } from "./store"
+import type { Finding } from "./store"
+import type { Severity } from "./findings"
 
 const SEVERITY_ORDER: Record<Severity, number> = { critical: 0, high: 1, medium: 2, low: 3, info: 4 }
 
