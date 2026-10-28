@@ -1,4 +1,4 @@
-import { loadScope, checkUrl, assertInScope, ScopeError } from "./scope"
+import { loadScope, scopeViolations } from "./scope"
 import { HopperStore } from "./store"
 import { captureEvidence } from "./evidence"
 import { writeReport } from "./report"
@@ -51,6 +51,23 @@ export interface RequestOpts {
 
 type FetchLike = (url: string, init?: RequestInit) => Promise<Response>
 
+/** Session/tool-call identity a mid-tool confirm (e.g. a redirect hop) needs to raise the operator dialog. */
+export interface ToolSessionContext {
+  sessionID?: string
+  agent?: string
+  messageID?: string
+  id?: string
+}
+
+/** Ask the operator about a scope escape — allow resolves, deny rejects. Never blocks by itself. */
+export type ConfirmScopeEscape = (violations: string[], reason: string, context?: ToolSessionContext) => Promise<void>
+
+export interface RequestHandlers {
+  fetch?: FetchLike
+  confirm?: ConfirmScopeEscape
+  context?: ToolSessionContext
+}
+
 const SENSITIVE_HEADERS = new Set(["authorization", "cookie", "set-cookie", "x-api-key", "proxy-authorization"])
 const MAX_HOPS = 5
 const MAX_BODY_CHARS = 64 * 1024
@@ -72,18 +89,27 @@ function redactHeaders(headers: Record<string, string>): Record<string, string> 
 export async function request(
   configDir: string,
   opts: RequestOpts,
-  fetchImpl: FetchLike = fetch,
+  handlers: RequestHandlers = {},
 ): Promise<RequestResult> {
+  const doFetch = handlers.fetch ?? fetch
   const hops: string[] = []
   let currentUrl = opts.url
   let response: Response | null = null
 
   for (let hop = 0; hop <= MAX_HOPS; hop++) {
-    // Fail-closed: re-load scope every hop so a deleted scope blocks mid-operation redirects too.
+    // Dialog-always: re-load scope every hop. An out-of-scope hop asks the
+    // operator (allow once / always / deny); no confirm wired → proceed.
     const scope = loadScope(configDir)
-    checkUrl(scope, currentUrl)
+    const violations = scopeViolations(scope, [new URL(currentUrl).hostname])
+    if (violations.length > 0 && handlers.confirm) {
+      await handlers.confirm(
+        violations,
+        `redirect hop → ${violations.join(", ")} is outside the operation scope`,
+        handlers.context,
+      )
+    }
 
-    response = await fetchImpl(currentUrl, {
+    response = await doFetch(currentUrl, {
       method: opts.method ?? "GET",
       headers: opts.headers,
       body: opts.body,
@@ -223,21 +249,8 @@ export async function runScan(
   args: { mode: ScannerMode; target: string; extra?: string[] },
   run: (cmd: { bin: string; argv: string[] }) => Promise<{ exitCode: number; stdout: string }> = defaultSpawn,
 ): Promise<{ command: string; exitCode: number; stdout: string }> {
-  const scope = loadScope(configDir)
-  if (args.mode === "portscan") {
-    assertInScope(scope, scopeTarget("portscan", args.target))
-  } else {
-    checkUrl(scope, scopeTarget(args.mode, args.target))
-  }
-
+  void configDir // scope policy lives in the execute.before hook; the tool body is scope-blind
   const cmd = buildCommand(args.mode, scopeTarget(args.mode, args.target), args.extra)
-  for (let i = 0; i < cmd.argv.length; i++) {
-    const a = cmd.argv[i]!
-    if (a === "-iL" || a === "--input-file") {
-      throw new ScopeError(`scope guard: input-file lists cannot be scope-verified (${cmd.argv[i + 1] ?? ""})`)
-    }
-    if (/^https?:\/\//.test(a)) checkUrl(scope, a)
-  }
   if (Bun.which(cmd.bin) === null) {
     return {
       command: `${cmd.bin} ${cmd.argv.join(" ")}`,
@@ -265,7 +278,7 @@ export interface ToolDef {
 const SEVERITIES = ["critical", "high", "medium", "low", "info"]
 const FINDING_STATUSES = ["candidate", "observed", "verified", "reportable", "rejected", "stale"]
 
-export function buildTools(configDir: string): ToolDef[] {
+export function buildTools(configDir: string, confirm?: ConfirmScopeEscape): ToolDef[] {
   return [
     {
       name: "doctor",
@@ -288,7 +301,7 @@ export function buildTools(configDir: string): ToolDef[] {
     {
       name: "http-request",
       description:
-        "Precision instrument for manual web testing: injections, auth bypass, IDOR, SSRF probes. Performs one HTTP request with exact method/headers/body and returns status, headers, body, a SHA256 over the raw bytes (evidence-grade), and the redirect hops followed. Every hop is re-checked against the active operation scope — out-of-scope redirects (including cloud metadata IPs) are refused, and with no active scope the tool fails closed. Sensitive response headers are redacted in the echo.",
+        "Precision instrument for manual web testing: injections, auth bypass, IDOR, SSRF probes. Performs one HTTP request with exact method/headers/body and returns status, headers, body, a SHA256 over the raw bytes (evidence-grade), and the redirect hops followed. The URL and every redirect hop are checked against the active operation scope — an out-of-scope target raises the operator dialog (allow once / always / deny) instead of refusing. Sensitive response headers are redacted in the echo.",
       input: {
         type: "object",
         properties: {
@@ -301,14 +314,21 @@ export function buildTools(configDir: string): ToolDef[] {
         required: ["url"],
         additionalProperties: false,
       },
-      async execute(input: { url: string; method?: string; headers?: Record<string, string>; body?: string; timeoutMs?: number }) {
-        const result = await request(configDir, {
-          url: input.url,
-          method: input.method,
-          headers: input.headers,
-          body: input.body,
-          timeoutMs: input.timeoutMs,
-        })
+      async execute(
+        input: { url: string; method?: string; headers?: Record<string, string>; body?: string; timeoutMs?: number },
+        context?: unknown,
+      ) {
+        const result = await request(
+          configDir,
+          {
+            url: input.url,
+            method: input.method,
+            headers: input.headers,
+            body: input.body,
+            timeoutMs: input.timeoutMs,
+          },
+          { confirm, context: context as ToolSessionContext | undefined },
+        )
         return { content: JSON.stringify(result, null, 2) }
       },
     },
@@ -334,7 +354,7 @@ export function buildTools(configDir: string): ToolDef[] {
     {
       name: "scanner",
       description:
-        "Active web/network recon: portscan (nmap service scan), dirfuzz (ffuf directory brute-force with FUZZ placeholder in the target URL), and techscan (whatweb fingerprinting). Targets are checked against the active operation scope — an out-of-scope target or a missing scope refuses the scan (fail-closed). Non-zero exit codes are returned as signal, not errors. Use before drilling with http-request or shell.",
+        "Active web/network recon: portscan (nmap service scan), dirfuzz (ffuf directory brute-force with FUZZ placeholder in the target URL), and techscan (whatweb fingerprinting). Targets are checked against the active operation scope — an out-of-scope target or a missing scope raises the operator dialog (allow once / always / deny) instead of refusing. Non-zero exit codes are returned as signal, not errors. Use before drilling with http-request or shell.",
       input: {
         type: "object",
         properties: {
@@ -345,8 +365,7 @@ export function buildTools(configDir: string): ToolDef[] {
         required: ["mode", "target"],
         additionalProperties: false,
       },
-      async execute(input: { mode: ScannerMode; target: string; extra?: string[] }, context?: { signal?: AbortSignal }) {
-        void context
+      async execute(input: { mode: ScannerMode; target: string; extra?: string[] }) {
         const res = await runScan(configDir, { mode: input.mode, target: input.target, extra: input.extra })
         return { content: [`$ ${res.command}`, `exit: ${res.exitCode}`, "", res.stdout || "(no output)"].join("\n") }
       },
@@ -354,7 +373,7 @@ export function buildTools(configDir: string): ToolDef[] {
     {
       name: "operation",
       description:
-        "Ground truth for 'what am I working on'. Creates, lists, or reports the active operation: a named engagement against one target boundary. Creating an operation archives the previous one and writes the active scope (fail-closed for every scoped tool). action=status returns the active operation; action=list returns the operation history; action=create needs name and target (host, wildcard domain, or CIDR — URLs are normalized to their hostname).",
+        "Ground truth for 'what am I working on'. Creates, lists, or reports the active operation: a named engagement against one target boundary. Creating an operation archives the previous one and writes the active scope (scoped tools confirm with the operator when a target falls outside it). action=status returns the active operation; action=list returns the operation history; action=create needs name and target (host, wildcard domain, or CIDR — URLs are normalized to their hostname).",
       input: {
         type: "object",
         properties: {

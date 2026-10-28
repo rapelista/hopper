@@ -4,7 +4,6 @@ import { join } from "node:path"
 import { tmpdir } from "node:os"
 import { request } from "../src/lib/tools"
 import { saveScope } from "../src/lib/scope"
-import { ScopeError } from "../src/lib/scope"
 
 let configDir: string
 let emptyDir: string
@@ -26,9 +25,9 @@ afterAll(() => {
 
 const ok = (body: string | null, init?: ResponseInit) => new Response(body, init)
 
-describe("http-request scope enforcement", () => {
+describe("http-request dialog-always behavior", () => {
   test("in-scope 200 returns result with correct sha256", async () => {
-    const res = await request(configDir, { url: "https://sub.example.test/x" }, async () => ok("hello"))
+    const res = await request(configDir, { url: "https://sub.example.test/x" }, { fetch: async () => ok("hello") })
     expect(res.status).toBe(200)
     expect(res.body).toBe("hello")
     expect(res.sha256).toBe(
@@ -37,47 +36,78 @@ describe("http-request scope enforcement", () => {
     expect(res.hops).toEqual([])
   })
 
-  test("out-of-scope url throws ScopeError", async () => {
-    expect(request(configDir, { url: "https://evil.test/" }, async () => ok("x"))).rejects.toBeInstanceOf(ScopeError)
+  test("out-of-scope initial url proceeds when no confirm is wired (hook owns the gate)", async () => {
+    const res = await request(configDir, { url: "https://evil.test/" }, { fetch: async () => ok("x") })
+    expect(res.body).toBe("x")
   })
 
-  test("missing scope fails closed (RF#5)", async () => {
-    expect(request(emptyDir, { url: "https://sub.example.test/" }, async () => ok("x"))).rejects.toBeInstanceOf(
-      ScopeError,
-    )
+  test("missing scope proceeds without confirm (RF#5 → dialog-always)", async () => {
+    const res = await request(emptyDir, { url: "https://sub.example.test/" }, { fetch: async () => ok("x") })
+    expect(res.status).toBe(200)
   })
 
-  test("non-http protocol throws", async () => {
-    expect(request(configDir, { url: "file:///etc/passwd" }, async () => ok("x"))).rejects.toBeInstanceOf(ScopeError)
+  test("non-http scheme is left to fetch itself", async () => {
+    await expect(
+      request(configDir, { url: "file:///etc/passwd" }, { fetch: async () => { throw new Error("fetch refuses") } }),
+    ).rejects.toThrow("fetch refuses")
   })
 
   test("in-scope redirect is followed and recorded", async () => {
     let calls = 0
-    const res = await request(configDir, { url: "https://a.example.test/" }, async (input, init) => {
-      calls++
-      if (calls === 1) return ok(null, { status: 302, headers: { location: "https://b.example.test/final" } })
-      return ok("landed")
+    const res = await request(configDir, { url: "https://a.example.test/" }, {
+      fetch: async () => {
+        calls++
+        if (calls === 1) return ok(null, { status: 302, headers: { location: "https://b.example.test/final" } })
+        return ok("landed")
+      },
     })
     expect(res.status).toBe(200)
     expect(res.body).toBe("landed")
     expect(res.hops).toEqual(["https://b.example.test/final"])
   })
 
-  test("redirect to out-of-scope domain is blocked; IP redirects pass (operator responsible)", async () => {
-    const res = request(configDir, { url: "https://a.example.test/" }, async () =>
-      ok(null, { status: 302, headers: { location: "http://scanme.nmap.org/" } }),
-    )
-    expect(res).rejects.toBeInstanceOf(ScopeError)
-
-    let calls = 0
-    const meta = await request(configDir, { url: "https://a.example.test/" }, async () => {
-      calls++
-      return calls === 1
-        ? ok(null, { status: 302, headers: { location: "http://169.254.169.254/latest/meta-data" } })
-        : ok("metadata")
+  test("out-of-scope redirect hop confirms; allow follows, deny rejects", async () => {
+    const calls: Array<[string[], string]> = []
+    const hopTo = (loc: string) => {
+      let n = 0
+      return async () => {
+        n++
+        return n === 1 ? ok(null, { status: 302, headers: { location: loc } }) : ok("landed")
+      }
+    }
+    const res = await request(configDir, { url: "https://a.example.test/" }, {
+      fetch: hopTo("http://scanme.nmap.org/"),
+      confirm: async (v, r) => {
+        calls.push([v, r])
+      },
+      context: { sessionID: "s1", messageID: "m1", id: "c1" },
     })
-    expect(calls).toBe(2) // redirect followed — IPs are never fence-checked
-    expect(meta.body).toBe("metadata")
+    expect(calls).toEqual([[["scanme.nmap.org"], expect.stringContaining("redirect hop")]])
+    expect(res.body).toBe("landed")
+    await expect(
+      request(configDir, { url: "https://a.example.test/" }, {
+        fetch: hopTo("http://scanme.nmap.org/"),
+        confirm: async () => {
+          throw new Error("denied by operator")
+        },
+      }),
+    ).rejects.toThrow("denied by operator")
+  })
+
+  test("redirect to an IP literal never confirms (RF#3)", async () => {
+    let confirmed = 0
+    let n = 0
+    const res = await request(configDir, { url: "https://a.example.test/" }, {
+      fetch: async () => {
+        n++
+        return n === 1 ? ok(null, { status: 302, headers: { location: "http://169.254.169.254/md" } }) : ok("metadata")
+      },
+      confirm: async () => {
+        confirmed++
+      },
+    })
+    expect(confirmed).toBe(0)
+    expect(res.body).toBe("metadata")
   })
 
   test("sensitive response headers are redacted in the echo", async () => {
@@ -87,10 +117,12 @@ describe("http-request scope enforcement", () => {
         url: "https://sub.example.test/auth",
         headers: { Authorization: "Bearer sekrit" },
       },
-      async () =>
-        ok("fine", {
-          headers: { "Set-Cookie": "session=abc", Authorization: "Bearer sekrit", "X-Custom": "keep" },
-        }),
+      {
+        fetch: async () =>
+          ok("fine", {
+            headers: { "Set-Cookie": "session=abc", Authorization: "Bearer sekrit", "X-Custom": "keep" },
+          }),
+      },
     )
     expect(JSON.stringify(res.headers)).not.toContain("sekrit")
     expect(JSON.stringify(res.headers)).not.toContain("session=abc")

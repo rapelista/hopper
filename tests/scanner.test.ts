@@ -3,7 +3,7 @@ import { mkdirSync, rmSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { tmpdir } from "node:os"
 import { buildCommand, runScan, COMMON_WORDLIST, buildTools } from "../src/lib/tools"
-import { saveScope, ScopeError } from "../src/lib/scope"
+import { saveScope } from "../src/lib/scope"
 
 let configDir: string
 let emptyDir: string
@@ -62,7 +62,7 @@ const okRun = async (cmd: { bin: string; argv: string[] }) => ({
   stdout: `${cmd.bin} ${cmd.argv.join(" ")}\ndone`,
 })
 
-describe("runScan scope enforcement", () => {
+describe("runScan (dialog-always - the hook owns static checks)", () => {
   test("in-scope host passes through with command echo", async () => {
     const res = await runScan(configDir, { mode: "portscan", target: "10.0.0.5" }, okRun)
     expect(res.exitCode).toBe(0)
@@ -70,18 +70,19 @@ describe("runScan scope enforcement", () => {
     expect(res.stdout).toContain("10.0.0.5")
   })
 
-  test("out-of-scope domain throws ScopeError; IPs are not fence-checked", async () => {
-    await expect(
-      runScan(configDir, { mode: "portscan", target: "scanme.nmap.org" }, okRun),
-    ).rejects.toBeInstanceOf(ScopeError)
-    const ip = await runScan(configDir, { mode: "portscan", target: "203.0.113.9" }, okRun)
-    expect(ip.command).toContain("203.0.113.9")
+  test("out-of-scope domain proceeds (hook owns the gate); IPs never checked", async () => {
+    const res = await runScan(configDir, { mode: "portscan", target: "scanme.nmap.org" }, okRun)
+    expect(res.command).toContain("scanme.nmap.org")
   })
 
-  test("missing scope fails closed (RF#5)", () => {
-    expect(runScan(emptyDir, { mode: "techscan", target: "https://sub.example.test" }, okRun)).rejects.toBeInstanceOf(
-      ScopeError,
-    )
+  test("missing scope proceeds (RF#5 → dialog-always)", async () => {
+    const res = await runScan(emptyDir, { mode: "portscan", target: "sub.example.test" }, okRun)
+    expect(res.exitCode).toBe(0)
+  })
+
+  test("input-file list and smuggled url extras proceed (hook checks extras)", async () => {
+    expect((await runScan(configDir, { mode: "portscan", target: "10.0.0.5", extra: ["-iL", "hosts.txt"] }, okRun)).exitCode).toBe(0)
+    expect((await runScan(configDir, { mode: "portscan", target: "10.0.0.5", extra: ["http://scanme.nmap.org/"] }, okRun)).exitCode).toBe(0)
   })
 
   test("non-zero exit is returned, not thrown", async () => {
@@ -89,31 +90,6 @@ describe("runScan scope enforcement", () => {
     const res = await runScan(configDir, { mode: "portscan", target: "10.0.0.5" }, failing)
     expect(res.exitCode).toBe(1)
     expect(res.stdout).toContain("command not found")
-  })
-})
-
-describe("extra argv scope enforcement (review fix)", () => {
-  test("out-of-scope domain URL smuggled via extra is refused; IP extras pass (operator responsible)", async () => {
-    await expect(
-      runScan(configDir, { mode: "techscan", target: "https://sub.example.test", extra: ["http://scanme.nmap.org/"] }, okRun),
-    ).rejects.toBeInstanceOf(ScopeError)
-    const ip = await runScan(
-      configDir,
-      { mode: "portscan", target: "10.0.0.5", extra: ["http://169.254.169.254/"] },
-      okRun,
-    )
-    expect(ip.exitCode).toBe(0)
-  })
-
-  test("input-file list flags are refused", () => {
-    expect(
-      runScan(configDir, { mode: "portscan", target: "10.0.0.5", extra: ["-iL", "hosts.txt"] }, okRun),
-    ).rejects.toBeInstanceOf(ScopeError)
-  })
-
-  test("harmless extra flags still pass", async () => {
-    const res = await runScan(configDir, { mode: "portscan", target: "10.0.0.5", extra: ["-Pn"] }, okRun)
-    expect(res.exitCode).toBe(0)
   })
 })
 
