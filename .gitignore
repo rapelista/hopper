@@ -4,3 +4,4 @@ node_modules/
 .opencode/scope.json
 .superpowers/
 docs/
+.worktrees/
