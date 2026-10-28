@@ -115,7 +115,9 @@ export function registerCommands(ctx: CommandsCtx): { cleanup: () => void } {
     }
   }
 
-  const stopLayer = ctx.keymap.layer(() => ({
+  // keymap layers dispose with the plugin (disable/reload/component dispose) —
+  // layer() returns no disposer; only the session tracker needs manual cleanup.
+  ctx.keymap.layer(() => ({
     mode: "global",
     commands: [
       {
@@ -144,5 +146,5 @@ export function registerCommands(ctx: CommandsCtx): { cleanup: () => void } {
     ],
   }))
 
-  return { cleanup: () => { stopTrack(); stopLayer() } }
+  return { cleanup: () => { stopTrack() } }
 }
