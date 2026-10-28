@@ -4,6 +4,7 @@ import { join } from "node:path"
 import { tmpdir } from "node:os"
 import hopperPlugin, { bashScopeGuard, buildTools } from "../src/index"
 import type { Scope } from "../src/lib/scope"
+import { makeMockCtx } from "./helpers"
 
 const scope = (targets: string[]): Scope => ({ targets, strict: true, created: "x" })
 
@@ -115,98 +116,6 @@ describe("bashScopeGuard", () => {
     expect(bashScopeGuard(scope(["example.test"]), "curl http://2852039166/").ok).toBe(true)
   })
 })
-
-/** Minimal v2 plugin-context mock capturing registrations. */
-function makeMockCtx(projectDir: string, permission?: {
-  assert: (input: unknown) => Promise<void>
-}) {
-  const addedTools: Array<{ name: string; description: string; input: unknown; execute: unknown }> = []
-  const addedSkills: Array<{ id: string; name: string; description?: string; path: string; content: string }> = []
-  const addedCommands: Array<{ name: string; description?: string; execute: (input: any) => Promise<void> }> = []
-  const agentUpdates: Array<{ id: string; fn: (agent: any) => void }> = []
-  const agentSwitches: unknown[] = []
-  const prompts: unknown[] = []
-  const toolHooks: Record<string, (event: unknown) => unknown> = {}
-  const sessionHooks: Record<string, (event: unknown) => unknown> = {}
-  const reg = { dispose: async () => {} }
-  const editor = {
-    list: () => [],
-    get: () => undefined,
-    add: (t: { name: string; description: string; input: unknown; execute: unknown }) => addedTools.push(t),
-    update: () => {},
-    remove: () => {},
-    namespace: () => {},
-  }
-  const skillEditor = {
-    list: () => [],
-    get: () => undefined,
-    add: (s: { id: string; name: string; description?: string; path: string; content: string }) => addedSkills.push(s),
-    update: () => {},
-    remove: () => {},
-  }
-  const agentEditor = {
-    list: () => [],
-    get: () => undefined,
-    default: () => {},
-    update: (id: string, fn: (agent: any) => void) => agentUpdates.push({ id, fn }),
-    remove: () => {},
-  }
-  const commandEditor = {
-    add: (c: { name: string; description?: string; execute: (input: any) => Promise<void> }) => addedCommands.push(c),
-  }
-  const ctx = {
-    location: { directory: projectDir, project: { id: "p", directory: projectDir, canonical: projectDir } },
-    tool: {
-      transform: async (cb: (e: typeof editor) => void) => {
-        cb(editor)
-        return reg
-      },
-      hook: async (name: string, cb: (event: unknown) => unknown) => {
-        toolHooks[name] = cb
-        return reg
-      },
-      list: async () => [],
-    },
-    skill: {
-      transform: async (cb: (e: typeof skillEditor) => void) => {
-        cb(skillEditor)
-        return reg
-      },
-      reload: async () => {},
-    },
-    agent: {
-      transform: async (cb: (e: typeof agentEditor) => void) => {
-        cb(agentEditor)
-        return reg
-      },
-      reload: async () => {},
-    },
-    command: {
-      transform: async (cb: (e: typeof commandEditor) => void) => {
-        cb(commandEditor)
-        return reg
-      },
-      list: async () => [],
-      reload: async () => {},
-    },
-    session: {
-      hook: async (name: string, cb: (event: unknown) => unknown) => {
-        sessionHooks[name] = cb
-        return reg
-      },
-      get: async () => ({ agent: "build" }),
-      switchAgent: async (input: unknown) => {
-        agentSwitches.push(input)
-      },
-      prompt: async (input: unknown) => {
-        prompts.push(input)
-        return {}
-      },
-    },
-    ...(permission ? { permission } : {}),
-  }
-  return { ctx, addedTools, addedSkills, addedCommands, agentUpdates, agentSwitches, prompts, toolHooks, sessionHooks }
-}
 
 const EVENT_BASE = {
   sessionID: "ses_test",

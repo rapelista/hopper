@@ -41,8 +41,8 @@ export function loadScope(configDir: string): Scope | null {
   return parseScope(readFileSync(path, "utf8"))
 }
 
-/** Normalize a scope target: URL → hostname, lowercase, port stripped. */
-function normalizeTarget(target: string): string {
+/** Normalize a scope target: URL → hostname, lowercase, `host:port` → host. */
+export function normalizeTarget(target: string): string {
   const t = target.trim().toLowerCase()
   if (/^https?:\/\//.test(t)) {
     try {
@@ -51,7 +51,7 @@ function normalizeTarget(target: string): string {
       return t
     }
   }
-  return t
+  return normalizeHost(t)
 }
 
 export function saveScope(configDir: string, scope: Scope): void {

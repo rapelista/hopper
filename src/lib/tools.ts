@@ -3,6 +3,7 @@ import { HopperStore } from "./store"
 import { captureEvidence } from "./evidence"
 import { writeReport } from "./report"
 import { buildShareBundle } from "./share"
+import type { HopperNotify } from "../rpc"
 import { mkdirSync } from "node:fs"
 import { join } from "node:path"
 
@@ -288,7 +289,12 @@ export interface ToolDef {
 const SEVERITIES = ["critical", "high", "medium", "low", "info"]
 const FINDING_STATUSES = ["candidate", "observed", "verified", "reportable", "rejected", "stale"]
 
-export function buildTools(configDir: string, confirm?: ConfirmScopeEscape): ToolDef[] {
+export function buildTools(
+  configDir: string,
+  opts?: { confirm?: ConfirmScopeEscape; notify?: HopperNotify },
+): ToolDef[] {
+  const confirm = opts?.confirm
+  const notify = opts?.notify
   return [
     {
       name: "doctor",
@@ -400,6 +406,11 @@ export function buildTools(configDir: string, confirm?: ConfirmScopeEscape): Too
           if (input.action === "create") {
             if (!input.name || !input.target) return { content: "create needs both name and target." }
             const op = store.createOperation(input.name, input.target)
+            try {
+              notify?.({ type: "operation.changed", data: { operationId: op.id } })
+            } catch {
+              // best-effort — a missed notification never blocks the tool
+            }
             return { content: `Active operation: ${op.name} (target: ${op.target})\nScope file written — every scoped tool now enforces this boundary.` }
           }
           if (input.action === "status") {
@@ -446,6 +457,11 @@ export function buildTools(configDir: string, confirm?: ConfirmScopeEscape): Too
             if (!opId) return { content: "No active operation — create one first (operation action=create or /pwn)." }
             if (!input.title || !input.severity || !input.target) return { content: "add needs title, severity, and target." }
             const f = store.addFinding(opId, { title: input.title, severity: input.severity, target: input.target, notes: input.notes })
+            try {
+              notify?.({ type: "finding.changed", data: { operationId: f.operation_id, findingId: f.id, status: f.status } })
+            } catch {
+              // best-effort
+            }
             return { content: `Finding ${f.id} recorded as candidate: [${f.severity}] ${f.title}` }
           }
           if (input.action === "list") {
@@ -457,6 +473,11 @@ export function buildTools(configDir: string, confirm?: ConfirmScopeEscape): Too
             if (!input.findingId || !input.status) return { content: "status needs findingId and status." }
             try {
               const f = store.updateFindingStatus(input.findingId, input.status)
+              try {
+                notify?.({ type: "finding.changed", data: { operationId: f.operation_id, findingId: f.id, status: f.status } })
+              } catch {
+                // best-effort
+              }
               return { content: `Finding ${f.id} → ${f.status}` }
             } catch (err) {
               return { content: err instanceof Error ? err.message : String(err) }

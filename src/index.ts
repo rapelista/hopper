@@ -3,8 +3,9 @@ import { existsSync, readdirSync, readFileSync } from "node:fs"
 import { join } from "node:path"
 import { bashScopeGuard } from "./lib/guard"
 import { buildTools, type ConfirmScopeEscape } from "./lib/tools"
-import { loadScope, scopeViolations, OPSEC_ADVISORY_HOSTS } from "./lib/scope"
+import { loadScope, saveScope, normalizeTarget, scopeViolations, OPSEC_ADVISORY_HOSTS } from "./lib/scope"
 import { HopperStore } from "./lib/store"
+import { Hopper, type HopperNotify } from "./rpc"
 
 export { bashScopeGuard } from "./lib/guard"
 export { buildTools } from "./lib/tools"
@@ -217,6 +218,83 @@ export default Plugin.define({
     // Operator dialog API (defensive: absent in some hosts → tools fail-open).
     const permissionAssert = (ctx as { permission?: { assert?: (input: unknown) => Promise<void> } }).permission?.assert
 
+    // 0. RPC surface: operation/findings/opsec state for the TUI part and any client.
+    const rpcReg = await ctx.rpc.register(Hopper, {
+      operationStatus: async () => {
+        const store = HopperStore.open(configDir)
+        try {
+          const op = store.getActiveOperation()
+          let opsec: "normal" | "strict" = "normal"
+          try {
+            opsec = loadScope(configDir)?.strict ? "strict" : "normal"
+          } catch {
+            opsec = "normal" // unreadable scope behaves like no scope — never throw
+          }
+          const counts: Record<string, number> = { candidate: 0, observed: 0, verified: 0, reportable: 0, rejected: 0, stale: 0 }
+          if (op) for (const f of store.listFindings(op.id)) counts[f.status] = (counts[f.status] ?? 0) + 1
+          return {
+            operation: op ? { id: op.id, name: op.name, target: op.target, createdAt: op.created_at } : null,
+            opsec,
+            findings: counts,
+          }
+        } finally {
+          store.close()
+        }
+      },
+      findings: async (input: unknown) => {
+        const { operationId } = input as { operationId?: string }
+        const store = HopperStore.open(configDir)
+        try {
+          const opId = operationId ?? store.getActiveOperation()?.id
+          const items = store
+            .listFindings(opId)
+            .map((f) => ({ id: f.id, title: f.title, severity: f.severity, status: f.status, target: f.target, createdAt: f.created_at }))
+          return { items }
+        } finally {
+          store.close()
+        }
+      },
+      createOperation: async (input: unknown) => {
+        const { name, target } = input as { name: string; target: string }
+        const store = HopperStore.open(configDir)
+        try {
+          const op = store.createOperation(name, normalizeTarget(target))
+          await rpcReg.events.emit("operation.changed", { operationId: op.id })
+          return { operation: { id: op.id, name: op.name, target: op.target, createdAt: op.created_at } }
+        } finally {
+          store.close()
+        }
+      },
+      setOpsec: async (input: unknown, context: { error: (type: "no_scope", message: string, data: { message: string }) => unknown; signal: AbortSignal }) => {
+        const { level } = input as { level: "normal" | "strict" }
+        let scope: ReturnType<typeof loadScope> = null
+        try {
+          scope = loadScope(configDir)
+        } catch {
+          scope = null // unreadable scope cannot be adjusted — typed error, never a crash
+        }
+        if (scope === null) {
+          return context.error("no_scope", "no active scope to adjust — create an operation first (/pwn)", {
+            message: "no active scope to adjust — create an operation first (/pwn)",
+          })
+        }
+        saveScope(configDir, { ...scope, strict: level === "strict" })
+        const store = HopperStore.open(configDir)
+        let operationId: string | null = null
+        try {
+          operationId = store.getActiveOperation()?.id ?? null
+        } finally {
+          store.close()
+        }
+        await rpcReg.events.emit("operation.changed", { operationId })
+        return { opsec: level }
+      },
+    })
+    const notify: HopperNotify = (event) => {
+      if (event.type === "operation.changed") void rpcReg.events.emit("operation.changed", { ...event.data }).catch(() => {})
+      else void rpcReg.events.emit("finding.changed", { ...event.data }).catch(() => {})
+    }
+
     // Mid-tool confirm (redirect hops): same allow/deny dialog, fed from the
     // tool's own execution context (sessionID/messageID/call id).
     const confirm: ConfirmScopeEscape | undefined =
@@ -237,7 +315,7 @@ export default Plugin.define({
 
     // 1. security tools (plain names — personas/commands/skills reference them bare)
     await ctx.tool.transform((editor) => {
-      for (const tool of buildTools(configDir, confirm)) editor.add(tool)
+      for (const tool of buildTools(configDir, { confirm, notify })) editor.add(tool)
     })
 
     // 1b. runbook skills bundled with the plugin (travel with it everywhere)
