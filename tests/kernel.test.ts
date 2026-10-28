@@ -335,14 +335,16 @@ describe("hopper v2 plugin", () => {
     expect(p.text).not.toContain("$ARGUMENTS")
   })
 
-  test("execute.before blocks shell command hitting the metadata IP", async () => {
+  test("strict shell out-of-scope resolves through the dialog instead of blocking", async () => {
     writeScopeFixure(true)
-    const { ctx, toolHooks } = makeMockCtx(tmpProject)
+    const asserts: unknown[] = []
+    const { ctx, toolHooks } = makeMockCtx(tmpProject, { assert: async (i: unknown) => { asserts.push(i) } })
     await (hopperPlugin as { setup: (ctx: unknown) => Promise<unknown> }).setup(ctx)
     const hook = toolHooks["execute.before"]! as (event: unknown) => Promise<void>
-    const violation = hook({ ...EVENT_BASE, tool: "shell", input: { command: "curl http://scanme.nmap.org/" } })
-    await expect(violation).rejects.toThrow(/scanme\.nmap\.org/)
+    await expect(hook({ ...EVENT_BASE, tool: "shell", input: { command: "curl http://scanme.nmap.org/" } })).resolves.toBeUndefined()
+    expect(asserts.length).toBe(1)
     await expect(hook({ ...EVENT_BASE, tool: "shell", input: { command: "curl http://localhost:3000/" } })).resolves.toBeUndefined()
+    expect(asserts.length).toBe(1) // in-scope/loopback: silent pass
   })
 
   test("guard result carries the violation list for the dialog", () => {
@@ -386,28 +388,137 @@ describe("hopper v2 plugin", () => {
     ).rejects.toThrow(/denied by operator/)
   })
 
-  test("strict: no dialog, direct block", async () => {
+  test("strict: operator denial still rejects (the deny is the only block left)", async () => {
     writeScopeFixure(true)
     const { ctx, toolHooks } = makeMockCtx(tmpProject, {
       assert: async () => {
-        throw new Error("dialog should not fire in strict mode")
+        throw new Error("denied by operator")
       },
     })
     await (hopperPlugin as { setup: (ctx: unknown) => Promise<unknown> }).setup(ctx)
     const hook = toolHooks["execute.before"]! as (event: unknown) => Promise<void>
     await expect(hook({ ...EVENT_BASE, tool: "shell", input: { command: "nmap scanme.nmap.org" } })).rejects.toThrow(
-      /scanme\.nmap\.org/,
+      /denied by operator/,
     )
   })
 
-  test("non-strict without permission api stays fail-closed", async () => {
+  test("no dialog api: warn and proceed (fail-open)", async () => {
     writeScopeFixure(false)
-    const { ctx, toolHooks } = makeMockCtx(tmpProject)
+    const warnings: string[] = []
+    const origWarn = console.warn
+    console.warn = (...args: unknown[]) => {
+      warnings.push(args.map(String).join(" "))
+    }
+    try {
+      const { ctx, toolHooks } = makeMockCtx(tmpProject)
+      await (hopperPlugin as { setup: (ctx: unknown) => Promise<unknown> }).setup(ctx)
+      const hook = toolHooks["execute.before"]! as (event: unknown) => Promise<void>
+      await expect(hook({ ...EVENT_BASE, tool: "shell", input: { command: "nmap scanme.nmap.org" } })).resolves.toBeUndefined()
+    } finally {
+      console.warn = origWarn
+    }
+    expect(warnings.join(" ")).toContain("scanme.nmap.org")
+  })
+
+  test("webfetch out-of-scope and no-scope both dialog", async () => {
+    writeScopeFixure(false)
+    const asserts: unknown[] = []
+    const { ctx, toolHooks } = makeMockCtx(tmpProject, { assert: async (i: unknown) => { asserts.push(i) } })
     await (hopperPlugin as { setup: (ctx: unknown) => Promise<unknown> }).setup(ctx)
     const hook = toolHooks["execute.before"]! as (event: unknown) => Promise<void>
-    await expect(hook({ ...EVENT_BASE, tool: "shell", input: { command: "nmap scanme.nmap.org" } })).rejects.toThrow(
-      /scanme\.nmap\.org/,
-    )
+    await hook({ ...EVENT_BASE, tool: "webfetch", input: { url: "https://evil.test/x" } })
+    rmSync(join(configDir, "scope.json"))
+    await hook({ ...EVENT_BASE, tool: "webfetch", input: { url: "https://a.test/x" } })
+    expect(asserts.length).toBe(2)
+    expect((asserts[1] as { metadata: { reason: string } }).metadata.reason).toContain("no active operation scope")
+  })
+
+  test("http-request url and scanner target/extras route through the same dialog", async () => {
+    writeScopeFixure(false)
+    const asserts: unknown[] = []
+    const { ctx, toolHooks } = makeMockCtx(tmpProject, { assert: async (i: unknown) => { asserts.push(i) } })
+    await (hopperPlugin as { setup: (ctx: unknown) => Promise<unknown> }).setup(ctx)
+    const hook = toolHooks["execute.before"]! as (event: unknown) => Promise<void>
+    await hook({ ...EVENT_BASE, tool: "http-request", input: { url: "https://evil.test/" } })
+    await hook({ ...EVENT_BASE, tool: "scanner", input: { mode: "portscan", target: "evil.test" } })
+    await hook({ ...EVENT_BASE, tool: "scanner", input: { mode: "portscan", target: "10.0.0.5", extra: ["-iL", "hosts.txt"] } })
+    expect(asserts.length).toBe(3)
+    expect((asserts[2] as { metadata: { reason: string } }).metadata.reason).toContain("input-file")
+  })
+
+  test("malformed url is skipped by the hook (RF#2)", async () => {
+    writeScopeFixure(false)
+    const asserts: unknown[] = []
+    const { ctx, toolHooks } = makeMockCtx(tmpProject, { assert: async (i: unknown) => { asserts.push(i) } })
+    await (hopperPlugin as { setup: (ctx: unknown) => Promise<unknown> }).setup(ctx)
+    const hook = toolHooks["execute.before"]! as (event: unknown) => Promise<void>
+    await expect(hook({ ...EVENT_BASE, tool: "webfetch", input: { url: "not a url" } })).resolves.toBeUndefined()
+    expect(asserts.length).toBe(0)
+  })
+
+  test("corrupt scope.json: shell passes, webfetch dialogs (RF#1)", async () => {
+    writeFileSync(join(configDir, "scope.json"), "{corrupt")
+    const asserts: unknown[] = []
+    const { ctx, toolHooks } = makeMockCtx(tmpProject, { assert: async (i: unknown) => { asserts.push(i) } })
+    await (hopperPlugin as { setup: (ctx: unknown) => Promise<unknown> }).setup(ctx)
+    const hook = toolHooks["execute.before"]! as (event: unknown) => Promise<void>
+    await hook({ ...EVENT_BASE, tool: "shell", input: { command: "nmap scanme.nmap.org" } })
+    await hook({ ...EVENT_BASE, tool: "webfetch", input: { url: "https://a.test/" } })
+    expect(asserts.length).toBe(1)
+  })
+
+  test("leak-advisory host enriches the dialog reason in BOTH postures - strict stays inert (opsec decision B)", async () => {
+    writeScopeFixure(false)
+    const asserts: unknown[] = []
+    const { ctx, toolHooks } = makeMockCtx(tmpProject, { assert: async (i: unknown) => { asserts.push(i) } })
+    await (hopperPlugin as { setup: (ctx: unknown) => Promise<unknown> }).setup(ctx)
+    const hook = toolHooks["execute.before"]! as (event: unknown) => Promise<void>
+    await hook({ ...EVENT_BASE, tool: "webfetch", input: { url: "https://api.shodan.io/" } })
+    writeScopeFixure(true)
+    await hook({ ...EVENT_BASE, tool: "webfetch", input: { url: "https://crt.sh/?q=x" } })
+    expect(asserts.length).toBe(2) // strict posture still dialogs - never blocks
+    expect((asserts[0] as { metadata: { reason: string } }).metadata.reason).toContain("opsec advisory")
+    expect((asserts[1] as { metadata: { reason: string } }).metadata.reason).toContain("leak the target identity")
+  })
+
+  test("assert input carries resources and save for always-allow (RF#5)", async () => {
+    writeScopeFixure(false)
+    const asserts: unknown[] = []
+    const { ctx, toolHooks } = makeMockCtx(tmpProject, { assert: async (i: unknown) => { asserts.push(i) } })
+    await (hopperPlugin as { setup: (ctx: unknown) => Promise<unknown> }).setup(ctx)
+    const hook = toolHooks["execute.before"]! as (event: unknown) => Promise<void>
+    await hook({ ...EVENT_BASE, tool: "shell", input: { command: "curl http://scanme.nmap.org/" } })
+    const a = asserts[0] as Record<string, unknown>
+    expect(a.resources).toEqual(["scanme.nmap.org"])
+    expect(a.save).toEqual(["scanme.nmap.org"])
+  })
+
+  test("http-request tool raises the mid-flight redirect dialog through its wired confirm", async () => {
+    writeScopeFixure(false)
+    const asserts: unknown[] = []
+    const { ctx, addedTools } = makeMockCtx(tmpProject, { assert: async (i: unknown) => { asserts.push(i) } })
+    await (hopperPlugin as { setup: (ctx: unknown) => Promise<unknown> }).setup(ctx)
+    const tool = addedTools.find((t) => t.name === "http-request")! as {
+      execute: (input: unknown, context: unknown) => Promise<{ content: string }>
+    }
+    let n = 0
+    const origFetch = globalThis.fetch
+    globalThis.fetch = (async () => {
+      n++
+      return n === 1
+        ? new Response(null, { status: 302, headers: { location: "http://scanme.nmap.org/x" } })
+        : new Response("ok")
+    }) as unknown as typeof fetch
+    try {
+      const res = await tool.execute({ url: "https://example.test/" }, { sessionID: "s1", agent: "pentest", messageID: "m1", id: "c1" })
+      expect(res.content).toContain("ok")
+    } finally {
+      globalThis.fetch = origFetch
+    }
+    expect(asserts.length).toBe(1)
+    const a = asserts[0] as Record<string, unknown>
+    expect(a.sessionID).toBe("s1")
+    expect(a.resources).toEqual(["scanme.nmap.org"])
   })
 
   test("session context hook pushes the operation block", async () => {

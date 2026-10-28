@@ -2,8 +2,8 @@ import { Plugin, Skill } from "@opencode/plugin"
 import { existsSync, readdirSync, readFileSync } from "node:fs"
 import { join } from "node:path"
 import { bashScopeGuard } from "./lib/guard"
-import { buildTools } from "./lib/tools"
-import { loadScope, checkUrl } from "./lib/scope"
+import { buildTools, type ConfirmScopeEscape } from "./lib/tools"
+import { loadScope, scopeViolations, OPSEC_ADVISORY_HOSTS } from "./lib/scope"
 import { HopperStore } from "./lib/store"
 
 export { bashScopeGuard } from "./lib/guard"
@@ -214,9 +214,30 @@ export default Plugin.define({
   async setup(ctx) {
     const configDir = `${ctx.location.directory}/.opencode`
 
+    // Operator dialog API (defensive: absent in some hosts → tools fail-open).
+    const permissionAssert = (ctx as { permission?: { assert?: (input: unknown) => Promise<void> } }).permission?.assert
+
+    // Mid-tool confirm (redirect hops): same allow/deny dialog, fed from the
+    // tool's own execution context (sessionID/messageID/call id).
+    const confirm: ConfirmScopeEscape | undefined =
+      typeof permissionAssert === "function"
+        ? (violations, reason, context) =>
+            Promise.resolve(
+              permissionAssert.call(ctx.permission, {
+                sessionID: context?.sessionID,
+                agent: context?.agent,
+                source: { type: "tool", messageID: context?.messageID, id: context?.id },
+                action: "scope-escape",
+                resources: violations,
+                save: violations,
+                metadata: { reason },
+              }),
+            )
+        : undefined
+
     // 1. security tools (plain names — personas/commands/skills reference them bare)
     await ctx.tool.transform((editor) => {
-      for (const tool of buildTools(configDir)) editor.add(tool)
+      for (const tool of buildTools(configDir, confirm)) editor.add(tool)
     })
 
     // 1b. runbook skills bundled with the plugin (travel with it everywhere)
@@ -280,54 +301,104 @@ export default Plugin.define({
       })
     }
 
-    // 2. runtime guard: shell commands and webfetch stay inside the operation scope.
-    //    strict-opsec (scope.strict) hard-blocks; otherwise an out-of-scope target
-    //    raises the native allow/deny dialog via ctx.permission.assert — the operator
-    //    decides (once / always-for-this-host / deny). Throwing rejects the call.
+    // 2. runtime guard — dialog-always: every scope escape (shell, webfetch,
+    //    http-request, scanner target/extras) raises the operator dialog and
+    //    nothing else. A dialog deny is the only rejection path; with no dialog
+    //    API we warn and proceed (fail-open). `strict` changes nothing here —
+    //    opsec is advisory (operator decision B).
     await ctx.tool.hook("execute.before", async (event: ToolBeforeEvent) => {
       let scope: ReturnType<typeof loadScope> = null
-      let violation: { reason: string; violations: string[] } | null = null
       try {
         scope = loadScope(configDir)
+      } catch {
+        scope = null // unreadable scope behaves like no scope: dialogs, never blocks
+      }
+
+      const violations: string[] = []
+      let inputFile = ""
+      const input = (event.input ?? {}) as Record<string, unknown>
+
+      try {
         if (SHELL_TOOLS.has(event.tool)) {
-          const command = (event.input as { command?: unknown } | undefined)?.command
+          const command = input.command
           if (typeof command === "string") {
             const guard = bashScopeGuard(scope, command)
-            if (!guard.ok) violation = { reason: guard.reason, violations: guard.violations }
+            if (!guard.ok) violations.push(...guard.violations)
+          }
+        } else if (event.tool === "webfetch" || event.tool === "http-request") {
+          const url = input.url
+          if (typeof url === "string") {
+            try {
+              violations.push(...scopeViolations(scope, [new URL(url).hostname]))
+            } catch {
+              // malformed url — the tool itself will fail
+            }
+          }
+        } else if (event.tool === "scanner") {
+          const { mode, target } = input as { mode?: unknown; target?: unknown }
+          if (typeof mode === "string" && typeof target === "string") {
+            try {
+              const host = mode === "portscan" && !/^[a-z]+:\/\//i.test(target) ? target : new URL(target).hostname
+              violations.push(...scopeViolations(scope, [host]))
+            } catch {
+              // malformed target — the tool itself will fail
+            }
+          }
+          const extra = input.extra
+          if (Array.isArray(extra)) {
+            for (let i = 0; i < extra.length; i++) {
+              const arg = extra[i]
+              if (arg === "-iL" || arg === "--input-file") {
+                inputFile = `input-file list ${extra[i + 1] ?? ""}`
+              } else if (typeof arg === "string" && /^https?:\/\//.test(arg)) {
+                try {
+                  violations.push(...scopeViolations(scope, [new URL(arg).hostname]))
+                } catch {
+                  // malformed extra url — ignored
+                }
+              }
+            }
           }
         }
-        if (event.tool === "webfetch" && scope !== null) {
-          const url = (event.input as { url?: unknown } | undefined)?.url
-          if (typeof url === "string") checkUrl(scope, url)
-        }
       } catch (err) {
-        if (err instanceof Error && err.message.startsWith("scope guard:")) throw err
-        if ((err as { name?: string })?.name === "ScopeError") throw err
         // unexpected guard errors must never crash the host
         console.error("[hopper-kernel] guard error:", err)
         return
       }
-      if (!violation) return
 
-      if (scope?.strict) throw new Error(violation.reason) // strict-opsec: no dialog, no escape
+      if (violations.length === 0 && inputFile === "") return
 
-      const assert = (ctx as { permission?: { assert?: (input: unknown) => Promise<void> } }).permission?.assert
-      if (!assert) throw new Error(violation.reason) // no dialog API available → fail-closed
+      const parts: string[] = []
+      if (violations.length > 0) {
+        parts.push(
+          scope === null
+            ? `no active operation scope — confirm engaging ${violations.join(", ")}`
+            : `target(s) ${violations.join(", ")} outside the operation scope (${scope.targets.join(", ")})`,
+        )
+      }
+      if (inputFile !== "") parts.push(`${inputFile} cannot be scope-verified`)
+      for (const host of violations) {
+        if (OPSEC_ADVISORY_HOSTS.some((entry) => host === entry || host.endsWith("." + entry))) {
+          parts.push(`opsec advisory: engaging ${host} may leak the target identity to a third party`)
+        }
+      }
+      const reason = parts.join("; ")
+
+      if (typeof permissionAssert !== "function") {
+        console.warn("[hopper-kernel] scope escape without dialog api, proceeding:", reason)
+        return
+      }
 
       // Operator decision. Deny rejects with a Tool.Error the model sees; allow proceeds.
-      // Deliberately outside the swallowing try/catch above — a denial must block the call.
-      await assert.call(
-        ctx.permission,
-        {
-          sessionID: event.sessionID,
-          agent: event.agent,
-          source: { type: "tool", messageID: event.messageID, id: event.id },
-          action: "scope-escape",
-          resources: violation.violations,
-          save: violation.violations,
-          metadata: { reason: violation.reason },
-        },
-      )
+      await permissionAssert.call(ctx.permission, {
+        sessionID: event.sessionID,
+        agent: event.agent,
+        source: { type: "tool", messageID: event.messageID, id: event.id },
+        action: "scope-escape",
+        resources: violations.length > 0 ? violations : [inputFile],
+        save: violations.length > 0 ? violations : [inputFile],
+        metadata: { reason },
+      })
     })
 
     // 3. operation context on every agent-loop model call (system block)

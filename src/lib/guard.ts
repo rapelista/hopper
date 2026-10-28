@@ -59,7 +59,7 @@ export function bashScopeGuard(scope: Scope | null, command: string): GuardResul
     return {
       ok: false,
       violations,
-      reason: `scope guard: refusing out-of-scope target(s) ${violations.join(", ")} — allowed: ${scope.targets.join(", ")}`,
+      reason: `scope escape: ${violations.join(", ")} is outside the operation scope (${scope.targets.join(", ")})`,
     }
   }
   return { ok: true }

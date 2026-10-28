@@ -135,6 +135,20 @@ export function scopeViolations(scope: Scope | null, hosts: string[]): string[] 
   return [...new Set(out)]
 }
 
+/**
+ * Advisory only (operator decision B): hosts that, when engaged, carry the target
+ * identity to a third party. They never block anything — they only enrich the
+ * scope-escape dialog reason so the operator decides informed.
+ */
+export const OPSEC_ADVISORY_HOSTS: readonly string[] = [
+  "shodan.io",
+  "crt.sh",
+  "virustotal.com",
+  "urlscan.io",
+  "otx.alienvault.com",
+  "web.archive.org",
+]
+
 export function assertInScope(scope: Scope | null, host: string): void {
   if (scope === null) {
     throw new ScopeError("no active scope (fail-closed): refusing to engage any target — create one via /pwn or the operation tool first")
