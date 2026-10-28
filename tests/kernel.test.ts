@@ -122,6 +122,10 @@ function makeMockCtx(projectDir: string, permission?: {
 }) {
   const addedTools: Array<{ name: string; description: string; input: unknown; execute: unknown }> = []
   const addedSkills: Array<{ id: string; name: string; description?: string; path: string; content: string }> = []
+  const addedCommands: Array<{ name: string; description?: string; execute: (input: any) => Promise<void> }> = []
+  const agentUpdates: Array<{ id: string; fn: (agent: any) => void }> = []
+  const agentSwitches: unknown[] = []
+  const prompts: unknown[] = []
   const toolHooks: Record<string, (event: unknown) => unknown> = {}
   const sessionHooks: Record<string, (event: unknown) => unknown> = {}
   const reg = { dispose: async () => {} }
@@ -139,6 +143,16 @@ function makeMockCtx(projectDir: string, permission?: {
     add: (s: { id: string; name: string; description?: string; path: string; content: string }) => addedSkills.push(s),
     update: () => {},
     remove: () => {},
+  }
+  const agentEditor = {
+    list: () => [],
+    get: () => undefined,
+    default: () => {},
+    update: (id: string, fn: (agent: any) => void) => agentUpdates.push({ id, fn }),
+    remove: () => {},
+  }
+  const commandEditor = {
+    add: (c: { name: string; description?: string; execute: (input: any) => Promise<void> }) => addedCommands.push(c),
   }
   const ctx = {
     location: { directory: projectDir, project: { id: "p", directory: projectDir, canonical: projectDir } },
@@ -160,15 +174,38 @@ function makeMockCtx(projectDir: string, permission?: {
       },
       reload: async () => {},
     },
+    agent: {
+      transform: async (cb: (e: typeof agentEditor) => void) => {
+        cb(agentEditor)
+        return reg
+      },
+      reload: async () => {},
+    },
+    command: {
+      transform: async (cb: (e: typeof commandEditor) => void) => {
+        cb(commandEditor)
+        return reg
+      },
+      list: async () => [],
+      reload: async () => {},
+    },
     session: {
       hook: async (name: string, cb: (event: unknown) => unknown) => {
         sessionHooks[name] = cb
         return reg
       },
+      get: async () => ({ agent: "build" }),
+      switchAgent: async (input: unknown) => {
+        agentSwitches.push(input)
+      },
+      prompt: async (input: unknown) => {
+        prompts.push(input)
+        return {}
+      },
     },
     ...(permission ? { permission } : {}),
   }
-  return { ctx, addedTools, addedSkills, toolHooks, sessionHooks }
+  return { ctx, addedTools, addedSkills, addedCommands, agentUpdates, agentSwitches, prompts, toolHooks, sessionHooks }
 }
 
 const EVENT_BASE = {
@@ -229,7 +266,7 @@ describe("hopper v2 plugin", () => {
       ["appsec-web-triage", "forensics-kit", "passive-osint", "web-surface"].sort(),
     )
     for (const s of addedSkills) {
-      expect(s.path).toMatch(/\.opencode\/skills\/[^/]+\/SKILL\.md$/)
+      expect(s.path).toMatch(/src\/skills\/[^/]+\/SKILL\.md$/)
       expect(s.content.length).toBeGreaterThan(100)
       expect(s.content.startsWith("---")).toBe(false) // content is the body, frontmatter stripped
       expect(s.description?.length).toBeGreaterThan(10)
@@ -238,6 +275,58 @@ describe("hopper v2 plugin", () => {
     const osint = addedSkills.find((s) => s.id === "passive-osint")!
     expect(osint.content).toContain("# Passive OSINT kit")
     expect(osint.name).toBe("passive-osint")
+  })
+
+  test("setup bundles the five personas via agent-transform upsert", async () => {
+    const { ctx, agentUpdates } = makeMockCtx(tmpProject)
+    await (hopperPlugin as { setup: (ctx: unknown) => Promise<unknown> }).setup(ctx)
+    expect(agentUpdates.map((u) => u.id).sort()).toEqual(["appsec", "hacking", "osint", "pentest", "security"])
+
+    const apply = (id: string) => {
+      const rec = agentUpdates.find((u) => u.id === id)!
+      const agent: Record<string, unknown> = {}
+      rec.fn(agent)
+      return agent
+    }
+
+    const pentest = apply("pentest") as {
+      mode: string
+      system: string
+      permissions: Array<{ action: string; resource: string; effect: string }>
+    }
+    expect(pentest.mode).toBe("primary")
+    expect(pentest.system.length).toBeGreaterThan(100)
+    const shellRules = pentest.permissions.filter((r) => r.action === "shell")
+    expect(shellRules[0]).toMatchObject({ resource: "*", effect: "ask" })
+    expect(shellRules).toContainEqual({ action: "shell", resource: "nmap *", effect: "allow" })
+    expect(pentest.permissions).toContainEqual({ action: "edit", resource: "*", effect: "ask" })
+
+    const osint = apply("osint") as { permissions: Array<{ action: string; resource: string; effect: string }> }
+    expect(osint.permissions).toContainEqual({ action: "edit", resource: "*", effect: "deny" })
+
+    const hacking = apply("hacking") as { permissions: Array<{ action: string; resource: string; effect: string }> }
+    expect(hacking.permissions).toContainEqual({ action: "shell", resource: "*", effect: "allow" })
+
+    const security = apply("security") as { permissions: unknown[] }
+    expect(security.permissions).toEqual([]) // default posture, no overrides
+  })
+
+  test("setup bundles the slash commands with agent switch and $ARGUMENTS", async () => {
+    const { ctx, addedCommands, agentSwitches, prompts } = makeMockCtx(tmpProject)
+    await (hopperPlugin as { setup: (ctx: unknown) => Promise<unknown> }).setup(ctx)
+    expect(addedCommands.map((c) => c.name).sort()).toEqual(
+      ["doctor", "opsec", "pwn", "remediate", "report", "runbook", "share"].sort(),
+    )
+
+    const pwn = addedCommands.find((c) => c.name === "pwn")!
+    expect(pwn.description?.length).toBeGreaterThan(5)
+    await pwn.execute({ sessionID: "s1", prompt: { text: "http://localhost:3000" }, delivery: "steer" })
+
+    expect(agentSwitches).toEqual([{ sessionID: "s1", agent: "pentest" }])
+    const p = prompts[0] as { text: string; sessionID: string }
+    expect(p.sessionID).toBe("s1")
+    expect(p.text).toContain("http://localhost:3000")
+    expect(p.text).not.toContain("$ARGUMENTS")
   })
 
   test("execute.before blocks shell command hitting the metadata IP", async () => {

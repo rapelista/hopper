@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test"
 import { readFileSync, existsSync } from "node:fs"
 import { join } from "node:path"
 
-const agentsDir = join(import.meta.dir, "..", ".opencode", "agents")
+const agentsDir = join(import.meta.dir, "..", "src", "agents")
 
 const AGENTS = {
   security: { color: "secondary", phrases: ["Jarvis on a Kali box", "authorization"] },

@@ -98,7 +98,7 @@ describe("share tool + remediate command", () => {
 
   test("/remediate command targets a finding via $ARGUMENTS", async () => {
     const { readFileSync } = await import("node:fs")
-    const raw = readFileSync(join(import.meta.dir, "..", ".opencode", "commands", "remediate.md"), "utf8")
+    const raw = readFileSync(join(import.meta.dir, "..", "src", "commands", "remediate.md"), "utf8")
     expect(raw).toContain("$ARGUMENTS")
     expect(raw).toMatch(/^description:\s*.+/m)
   })

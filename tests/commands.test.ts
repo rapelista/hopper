@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test"
 import { readFileSync, existsSync } from "node:fs"
 import { join } from "node:path"
 
-const commandsDir = join(import.meta.dir, "..", ".opencode", "commands")
+const commandsDir = join(import.meta.dir, "..", "src", "commands")
 
 function readCommand(name: string) {
   const path = join(commandsDir, `${name}.md`)

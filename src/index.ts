@@ -26,7 +26,7 @@ interface BundledSkill {
  * native loader's semantics (skill-file.ts): id = directory name, name and
  * description from frontmatter, content = body with frontmatter stripped.
  */
-export function loadBundledSkills(skillsDir = join(repoRoot, ".opencode", "skills")): BundledSkill[] {
+export function loadBundledSkills(skillsDir = join(repoRoot, "src", "skills")): BundledSkill[] {
   if (!existsSync(skillsDir)) return []
   const out: BundledSkill[] = []
   for (const entry of readdirSync(skillsDir, { withFileTypes: true })) {
@@ -43,6 +43,121 @@ export function loadBundledSkills(skillsDir = join(repoRoot, ".opencode", "skill
       description: front.match(/^description:\s*(.+)$/m)?.[1]?.trim(),
       path: file,
       content: m[2] ?? "",
+    })
+  }
+  return out
+}
+
+// ---------------------------------------------------------------------------
+// bundled personas — the plugin ships the 5 Hopper agents itself
+// ---------------------------------------------------------------------------
+
+export interface PermissionRule {
+  action: string
+  resource: string
+  effect: "allow" | "ask" | "deny"
+}
+
+const EFFECTS = new Set(["allow", "ask", "deny"])
+
+export interface BundledAgent {
+  id: string
+  description?: string
+  mode: "primary" | "subagent" | "all"
+  color?: string
+  system: string
+  permissions: PermissionRule[]
+}
+
+function splitFrontmatter(raw: string): { front: string[]; body: string } | null {
+  const m = raw.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/)
+  if (!m) return null
+  return { front: m[1]!.split(/\r?\n/), body: m[2] ?? "" }
+}
+
+const unquote = (s: string) => s.replace(/^["']|["']$/g, "").trim()
+
+/**
+ * Convert the v1 `permission:` object frontmatter into ordered v2 rules.
+ * v2 evaluates last-match-wins, so file order ("*" first, exceptions after)
+ * is preserved. The v1 `bash` action maps to the v2 `shell` action.
+ */
+export function permissionRules(lines: string[]): PermissionRule[] {
+  const rules: PermissionRule[] = []
+  let action: string | null = null
+  for (const raw of lines) {
+    if (!raw.trim()) continue
+    const indent = raw.length - raw.trimStart().length
+    if (indent === 0) break // next top-level frontmatter key — permission block ended
+    const kv = raw.trim().match(/^(.+?):\s*(.*)$/)
+    if (!kv) continue
+    const key = unquote(kv[1]!)
+    const value = unquote(kv[2] ?? "")
+    if (value === "") {
+      action = key === "bash" ? "shell" : key
+      continue
+    }
+    if (!EFFECTS.has(value)) continue // not a permission line — skip defensively
+    const effect = value as PermissionRule["effect"]
+    if (indent <= 2) rules.push({ action: key === "bash" ? "shell" : key, resource: "*", effect })
+    else if (action) rules.push({ action, resource: key, effect })
+  }
+  return rules
+}
+
+/**
+ * Bundle the personas with the plugin. Registered through ctx.agent.transform:
+ * the editor's update() upserts (creates the agent when the id is absent),
+ * which is how new agents are introduced through the plugin API.
+ */
+export function loadBundledAgents(agentsDir = join(repoRoot, "src", "agents")): BundledAgent[] {
+  if (!existsSync(agentsDir)) return []
+  const out: BundledAgent[] = []
+  for (const entry of readdirSync(agentsDir, { withFileTypes: true })) {
+    if (!entry.isFile() || !entry.name.endsWith(".md")) continue
+    const parsed = splitFrontmatter(readFileSync(join(agentsDir, entry.name), "utf8"))
+    if (!parsed) continue
+    const fm = (key: string) =>
+      parsed.front.find((l) => l.startsWith(key + ":"))?.slice(key.length + 1).trim()
+    const permIdx = parsed.front.findIndex((l) => /^permission:/.test(l))
+    const mode = fm("mode")
+    out.push({
+      id: entry.name.replace(/\.md$/, ""),
+      description: fm("description"),
+      mode: mode === "subagent" || mode === "all" ? mode : "primary",
+      color: fm("color"),
+      system: parsed.body,
+      permissions: permIdx === -1 ? [] : permissionRules(parsed.front.slice(permIdx + 1)),
+    })
+  }
+  return out
+}
+
+// ---------------------------------------------------------------------------
+// bundled commands — the plugin ships the slash commands itself
+// ---------------------------------------------------------------------------
+
+export interface BundledCommand {
+  name: string
+  description?: string
+  agent?: string
+  template: string
+}
+
+export function loadBundledCommands(commandsDir = join(repoRoot, "src", "commands")): BundledCommand[] {
+  if (!existsSync(commandsDir)) return []
+  const out: BundledCommand[] = []
+  for (const entry of readdirSync(commandsDir, { withFileTypes: true })) {
+    if (!entry.isFile() || !entry.name.endsWith(".md")) continue
+    const parsed = splitFrontmatter(readFileSync(join(commandsDir, entry.name), "utf8"))
+    if (!parsed) continue
+    const fm = (key: string) =>
+      parsed.front.find((l) => l.startsWith(key + ":"))?.slice(key.length + 1).trim()
+    out.push({
+      name: entry.name.replace(/\.md$/, ""),
+      description: fm("description"),
+      agent: fm("agent"),
+      template: parsed.body,
     })
   }
   return out
@@ -113,6 +228,51 @@ export default Plugin.define({
             ...(s.description ? { description: s.description } : {}),
             path: Skill.Info.fields.path.make(s.path),
             content: s.content,
+          })
+        }
+      })
+    }
+
+    // 1c. personas bundled with the plugin. editor.update() upserts — creating
+    //     the agent when the id is absent — which is how the plugin API
+    //     introduces new agents.
+    const bundledAgents = loadBundledAgents()
+    if (bundledAgents.length > 0) {
+      await ctx.agent.transform((editor) => {
+        for (const a of bundledAgents) {
+          editor.update(a.id, (agent) => {
+            agent.description = a.description
+            agent.mode = a.mode
+            agent.color = a.color
+            agent.system = a.system
+            agent.permissions = a.permissions
+          })
+        }
+      })
+    }
+
+    // 1d. slash commands bundled with the plugin, mirroring the native
+    //     file-based loader: switch to the frontmatter agent, then submit the
+    //     template with $ARGUMENTS substituted.
+    const bundledCommands = loadBundledCommands()
+    if (bundledCommands.length > 0) {
+      await ctx.command.transform((editor) => {
+        for (const c of bundledCommands) {
+          editor.add({
+            name: c.name,
+            ...(c.description ? { description: c.description } : {}),
+            execute: async ({ sessionID, prompt, delivery }) => {
+              if (c.agent) {
+                const session = await ctx.session.get({ sessionID })
+                if (session.agent !== c.agent) await ctx.session.switchAgent({ sessionID, agent: c.agent })
+              }
+              await ctx.session.prompt({
+                ...prompt,
+                sessionID,
+                text: c.template.replaceAll("$ARGUMENTS", prompt.text ?? ""),
+                delivery,
+              })
+            },
           })
         }
       })

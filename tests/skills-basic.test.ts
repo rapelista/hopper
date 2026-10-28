@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test"
 import { readFileSync, existsSync } from "node:fs"
 import { join } from "node:path"
 
-const skillsDir = join(import.meta.dir, "..", ".opencode", "skills")
+const skillsDir = join(import.meta.dir, "..", "src", "skills")
 
 const SKILLS = {
   "passive-osint": ["zero direct traffic"],

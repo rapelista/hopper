@@ -3,7 +3,7 @@ import { readFileSync, existsSync } from "node:fs"
 import { join } from "node:path"
 
 const root = join(import.meta.dir, "..")
-const skillsDir = join(root, ".opencode", "skills")
+const skillsDir = join(root, "src", "skills")
 
 const RUNBOOKS = {
   "appsec-web-triage": ["http-request", "finding", "evidence", "doctor"],
@@ -43,7 +43,7 @@ describe.each(Object.keys(RUNBOOKS))("runbook skill %s", (name) => {
 
 describe("/runbook command", () => {
   test("exists with $ARGUMENTS and agent", () => {
-    const raw = readFileSync(join(root, ".opencode", "commands", "runbook.md"), "utf8")
+    const raw = readFileSync(join(root, "src", "commands", "runbook.md"), "utf8")
     expect(raw).toContain("$ARGUMENTS")
     expect(raw).toMatch(/agent:\s*pentest/)
     expect(raw).toMatch(/^description:\s*.+/m)
