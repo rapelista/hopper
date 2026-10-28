@@ -5,7 +5,7 @@ import { tmpdir } from "node:os"
 import { HopperStore } from "../.opencode/lib/store"
 import { renderReportMarkdown, writeReport } from "../.opencode/lib/report"
 import { captureEvidence } from "../.opencode/lib/evidence"
-import report from "../.opencode/tools/report"
+import { buildTools } from "../.opencode/lib/tools"
 
 let configDir: string
 let store: HopperStore
@@ -66,8 +66,8 @@ describe("writeReport", () => {
 })
 
 describe("report tool shape", () => {
-  test("default export has description and execute", () => {
-    const t = report as unknown as { description: string; execute: (args: Record<string, unknown>) => Promise<string> }
+  test("tool has description and executable content", () => {
+    const t = buildTools("/tmp").find((x) => x.name === "report")!
     expect(t.description.length).toBeGreaterThan(10)
     expect(typeof t.execute).toBe("function")
   })

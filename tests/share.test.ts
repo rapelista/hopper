@@ -5,7 +5,7 @@ import { tmpdir } from "node:os"
 import { HopperStore } from "../.opencode/lib/store"
 import { redactSecrets, buildShareBundle } from "../.opencode/lib/share"
 import { captureEvidence } from "../.opencode/lib/evidence"
-import share from "../.opencode/tools/share"
+import { buildTools } from "../.opencode/lib/tools"
 
 let configDir: string
 let store: HopperStore
@@ -91,9 +91,9 @@ describe("buildShareBundle", () => {
 
 describe("share tool + remediate command", () => {
   test("share tool has description and execute", () => {
-    const t = share as unknown as { description: string; execute: (args: Record<string, unknown>) => Promise<string> }
-    expect(t.description.length).toBeGreaterThan(10)
-    expect(typeof t.execute).toBe("function")
+    const share = buildTools("/tmp").find((x) => x.name === "share")!
+    expect(share.description.length).toBeGreaterThan(10)
+    expect(typeof share.execute).toBe("function")
   })
 
   test("/remediate command targets a finding via $ARGUMENTS", async () => {

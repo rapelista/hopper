@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import doctor, { TOOLS, checkTools, type DoctorReport } from "../.opencode/tools/doctor"
+import { TOOLS, checkTools, buildTools, type DoctorReport } from "../.opencode/lib/tools"
 
 describe("checkTools", () => {
   test("partitions available and missing binaries", () => {
@@ -18,12 +18,12 @@ describe("checkTools", () => {
 })
 
 describe("tool shape", () => {
-  test("default export is a tool with description and execute", async () => {
-    expect(typeof doctor).toBe("object")
-    const t = doctor as unknown as { description: string; execute: (args: unknown) => Promise<string> }
+  test("tool has description and executable content", async () => {
+    const t = buildTools("/tmp").find((x) => x.name === "doctor")!
     expect(t.description.length).toBeGreaterThan(10)
+    expect(typeof t.execute).toBe("function")
     const result = await t.execute({})
-    expect(result.toLowerCase()).toContain("nmap")
-    expect(result.toLowerCase()).toContain("brew install")
+    expect(result.content.toLowerCase()).toContain("nmap")
+    expect(result.content.toLowerCase()).toContain("brew install")
   })
 })

@@ -64,8 +64,8 @@ describe("opencode preset config", () => {
     expect(permission.doom_loop).toBe("ask")
   })
 
-  test("plugin key present as array", () => {
-    expect(Array.isArray(cfg.plugin)).toBe(true)
+  test("plugins key present as array", () => {
+    expect(Array.isArray(cfg.plugins)).toBe(true)
   })
 })
 

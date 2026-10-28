@@ -4,7 +4,7 @@ import { join } from "node:path"
 import { tmpdir } from "node:os"
 import { sha256Hex, captureEvidence, verifyEvidence } from "../.opencode/lib/evidence"
 import { HopperStore } from "../.opencode/lib/store"
-import evidence from "../.opencode/tools/evidence"
+import { buildTools } from "../.opencode/lib/tools"
 
 let configDir: string
 let store: HopperStore
@@ -68,8 +68,8 @@ describe("store evidence", () => {
 })
 
 describe("evidence tool shape", () => {
-  test("default export has description and execute", () => {
-    const t = evidence as unknown as { description: string; execute: (args: Record<string, unknown>) => Promise<string> }
+  test("tool has description and executable content", () => {
+    const t = buildTools("/tmp").find((x) => x.name === "evidence")!
     expect(t.description.length).toBeGreaterThan(10)
     expect(typeof t.execute).toBe("function")
   })

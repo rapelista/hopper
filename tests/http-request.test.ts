@@ -2,7 +2,7 @@ import { describe, expect, test, beforeAll, afterAll } from "bun:test"
 import { mkdirSync, rmSync } from "node:fs"
 import { join } from "node:path"
 import { tmpdir } from "node:os"
-import { request, type RequestResult } from "../.opencode/tools/http-request"
+import { request } from "../.opencode/lib/tools"
 import { saveScope } from "../.opencode/lib/scope"
 import { ScopeError } from "../.opencode/lib/scope"
 

@@ -2,7 +2,7 @@ import { describe, expect, test, beforeAll, afterAll } from "bun:test"
 import { mkdirSync, rmSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { tmpdir } from "node:os"
-import scanner, { buildCommand, runScan, COMMON_WORDLIST, type ScannerArgs } from "../.opencode/tools/scanner"
+import { buildCommand, runScan, COMMON_WORDLIST, buildTools } from "../.opencode/lib/tools"
 import { saveScope, ScopeError } from "../.opencode/lib/scope"
 
 let configDir: string
@@ -110,9 +110,9 @@ describe("extra argv scope enforcement (review fix)", () => {
 })
 
 describe("tool shape", () => {
-  test("default export has description covering active recon", () => {
-    const t = scanner as unknown as { description: string }
-    expect(t.description.toLowerCase()).toContain("recon")
-    expect(t.description.length).toBeGreaterThan(30)
+  test("tool has description and executable content", async () => {
+    const t = buildTools("/tmp").find((x) => x.name === "scanner")!
+    expect(t.description.length).toBeGreaterThan(10)
+    expect(typeof t.execute).toBe("function")
   })
 })

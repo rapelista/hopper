@@ -4,7 +4,7 @@ import { join } from "node:path"
 import { tmpdir } from "node:os"
 import { TRANSITIONS, canTransition, assertTransition, FindingError, type FindingStatus } from "../.opencode/lib/findings"
 import { HopperStore } from "../.opencode/lib/store"
-import finding from "../.opencode/tools/finding"
+import { buildTools } from "../.opencode/lib/tools"
 
 let configDir: string
 let store: HopperStore
@@ -84,8 +84,8 @@ describe("store findings", () => {
 })
 
 describe("finding tool shape", () => {
-  test("default export has description and execute", () => {
-    const t = finding as unknown as { description: string; execute: (args: Record<string, unknown>) => Promise<string> }
+  test("tool has description and executable content", () => {
+    const t = buildTools("/tmp").find((x) => x.name === "finding")!
     expect(t.description.length).toBeGreaterThan(10)
     expect(typeof t.execute).toBe("function")
   })

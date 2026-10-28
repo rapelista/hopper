@@ -16,5 +16,5 @@
     "external_directory": "ask",
     "doom_loop": "ask"
   },
-  "plugin": []
+  "plugins": []
 }

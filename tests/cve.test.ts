@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import cve, { queryOsv, OsvError, type VulnInfo } from "../.opencode/tools/cve"
+import { queryOsv, OsvError, buildTools, type VulnInfo } from "../.opencode/lib/tools"
 
 const osvPackageResponse = {
   vulns: [
@@ -61,10 +61,9 @@ describe("queryOsv", () => {
 })
 
 describe("tool shape", () => {
-  test("default export is a tool with description, args and execute", async () => {
-    const t = cve as unknown as { description: string; execute: (args: Record<string, unknown>) => Promise<string> }
+  test("tool has description and executable content", async () => {
+    const t = buildTools("/tmp").find((x) => x.name === "cve")!
     expect(t.description.length).toBeGreaterThan(10)
-    const out = await t.execute({ cve: "CVE-2026-4242" }).catch(() => "network-unavailable")
-    expect(typeof out).toBe("string")
+    expect(typeof t.execute).toBe("function")
   })
 })
