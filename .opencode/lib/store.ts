@@ -3,6 +3,12 @@ import { mkdirSync } from "node:fs"
 import { join } from "node:path"
 import { saveScope } from "./scope"
 import { assertTransition, type FindingStatus, type Severity } from "./findings"
+import type { CapturedEvidence, EvidenceKind } from "./evidence"
+
+export interface Evidence extends CapturedEvidence {
+  operation_id: string
+  content: string
+}
 
 export interface Operation {
   id: string
@@ -66,6 +72,25 @@ export class HopperStore {
         notes TEXT NOT NULL DEFAULT '',
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
+      )
+    `)
+    this.db.run(`
+      CREATE TABLE IF NOT EXISTS evidence (
+        id TEXT PRIMARY KEY,
+        operation_id TEXT NOT NULL,
+        kind TEXT NOT NULL CHECK (kind IN ('request','response','command','file','note')),
+        sha256 TEXT NOT NULL,
+        size INTEGER NOT NULL,
+        created_at TEXT NOT NULL,
+        meta TEXT NOT NULL DEFAULT '{}',
+        content TEXT NOT NULL
+      )
+    `)
+    this.db.run(`
+      CREATE TABLE IF NOT EXISTS evidence_findings (
+        evidence_id TEXT NOT NULL,
+        finding_id TEXT NOT NULL,
+        PRIMARY KEY (evidence_id, finding_id)
       )
     `)
   }
@@ -185,6 +210,35 @@ export class HopperStore {
     ])
     return { ...current, ...next, updated_at: now }
   }
+
+  saveEvidence(opId: string, captured: CapturedEvidence, content: string | Uint8Array): Evidence {
+    const text = typeof content === "string" ? content : new TextDecoder().decode(content)
+    this.db.run(
+      "INSERT INTO evidence (id, operation_id, kind, sha256, size, created_at, meta, content) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+      [captured.id, opId, captured.kind, captured.sha256, captured.size, captured.created_at, JSON.stringify(captured.meta), text],
+    )
+    return { ...captured, operation_id: opId, content: text }
+  }
+
+  listEvidence(opId: string, findingId?: string): Evidence[] {
+    const rows = findingId
+      ? (this.db
+          .query(
+            "SELECT e.* FROM evidence e JOIN evidence_findings ef ON e.id = ef.evidence_id WHERE e.operation_id = ? AND ef.finding_id = ? ORDER BY e.created_at DESC",
+          )
+          .all(opId, findingId) as Array<Record<string, unknown>>)
+      : (this.db
+          .query("SELECT * FROM evidence WHERE operation_id = ? ORDER BY created_at DESC")
+          .all(opId) as Array<Record<string, unknown>>)
+    return rows.map(rowToEvidence)
+  }
+
+  attachEvidence(findingId: string, evidenceId: string): void {
+    this.db.run(
+      "INSERT OR IGNORE INTO evidence_findings (evidence_id, finding_id) VALUES (?, ?)",
+      [evidenceId, findingId],
+    )
+  }
 }
 
 function rowToFinding(row: Record<string, unknown>): Finding {
@@ -198,5 +252,18 @@ function rowToFinding(row: Record<string, unknown>): Finding {
     notes: row.notes as string,
     created_at: row.created_at as string,
     updated_at: row.updated_at as string,
+  }
+}
+
+function rowToEvidence(row: Record<string, unknown>): Evidence {
+  return {
+    id: row.id as string,
+    operation_id: row.operation_id as string,
+    kind: row.kind as EvidenceKind,
+    sha256: row.sha256 as string,
+    size: row.size as number,
+    created_at: row.created_at as string,
+    meta: JSON.parse((row.meta as string) ?? "{}") as Record<string, string>,
+    content: row.content as string,
   }
 }
