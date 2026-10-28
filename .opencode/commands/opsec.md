@@ -6,7 +6,10 @@ agent: pentest
 The operator wants to review or change the opsec posture.
 
 1. Read `.opencode/scope.json` and report the current `strict` value and the active target boundary.
-2. If the operator asked for `strict` (or `/opsec strict`), set `"strict": true` in `.opencode/scope.json`; otherwise toggle to the requested value.
+2. Parse the argument deterministically:
+   - `/opsec strict` → set `"strict": true`
+   - `/opsec loose` (or `off`, `false`) → set `"strict": false`
+   - `/opsec` with no argument → only report, change nothing.
 3. Under **strict-opsec**, state the rules now in force:
    - No third-party lookups that would leak the target (Shodan, crt.sh, urlscan, VT, sandbox submissions).
    - Stay on-target or use local data.
