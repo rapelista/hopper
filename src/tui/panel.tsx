@@ -93,22 +93,19 @@ function LedgerPanel(props: { ctx: PanelCtx; model: () => PanelModel }) {
   const tabBar = (
     <box flexDirection="row" gap={1} flexShrink={0}>
       <For each={LIFECYCLE}>
-        {(status) => {
-          const active = status === tab()
-          return (
-            <box
-              paddingLeft={1}
-              paddingRight={1}
-              flexShrink={0}
-              backgroundColor={active ? activeBg : undefined}
-              onMouseDown={() => setTab(status)}
-            >
-              <text fg={active ? base : muted} wrapMode="none">
-                {`${statusInitial(status)}${props.model().byStatus[status]!.length}`}
-              </text>
-            </box>
-          )
-        }}
+        {(status) => (
+          <box
+            paddingLeft={1}
+            paddingRight={1}
+            flexShrink={0}
+            backgroundColor={tab() === status ? activeBg : undefined}
+            onMouseDown={() => setTab(status)}
+          >
+            <text fg={tab() === status ? base : muted} wrapMode="none">
+              {`${statusInitial(status)}${props.model().byStatus[status]!.length}`}
+            </text>
+          </box>
+        )}
       </For>
     </box>
   )
