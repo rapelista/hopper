@@ -62,7 +62,7 @@ describe("status module", () => {
     await settle()
     expect(s.fetches).toBe(1)
     expect(reg.status()?.operation?.name).toBe("juice")
-    expect(s.slots.map((x) => x.append).sort()).toEqual(["home.footer.status", "prompt.footer.status"])
+    expect(s.slots.map((x) => x.append).sort()).toEqual(["home.footer.status", "sidebar.content"])
     reg.cleanup()
   })
 

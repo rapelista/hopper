@@ -1,6 +1,6 @@
 import { createSignal } from "solid-js"
 import { Hopper, type OperationStatusResult } from "../rpc"
-import { bannerText } from "./format"
+import { bannerText, compactCounts } from "./format"
 import { currentSession } from "./current-session"
 
 /**
@@ -50,18 +50,35 @@ export function registerStatus(ctx: StatusCtx): { cleanup: () => void; status: (
     return s.opsec === "strict" ? ctx.theme?.text.error ?? "" : ctx.theme?.text.base ?? ""
   }
 
+  /** The sidebar block: a stacked, wider-friendly rendition of the banner. */
+  const renderSidebarBlock = (s: OperationStatusResult | null, theme?: { text: Record<string, string> }) => {
+    if (s === null || s.operation === null) {
+      return <text fg={theme?.text.muted ?? ""}>hop · no operation</text>
+    }
+    const counts = compactCounts(s.findings)
+    return (
+      <box flexDirection="column">
+        <text fg={s.opsec === "strict" ? theme?.text.error ?? "" : theme?.text.base ?? ""}>
+          {`hop · ${s.operation.name}`}
+        </text>
+        <text fg={theme?.text.muted ?? ""}>{s.operation.target}</text>
+        <text fg={theme?.text.muted ?? ""}>{counts === "" ? s.opsec : `${s.opsec} · ${counts}`}</text>
+      </box>
+    )
+  }
+
   const stops = [
     rpc.events.on("operation.changed", () => void refresh()),
     rpc.events.on("finding.changed", () => void refresh()),
     // backstop: a finished agent turn may have mutated the store through tools
     ctx.data.on("session.execution.succeeded", () => void refresh()),
     ctx.ui.slot({
-      append: "prompt.footer.status",
-      // PromptFooterInput carries the sessionID of the session whose prompt is
-      // rendered — the most reliable "current session" source there is.
+      append: "sidebar.content",
+      // SidebarContentInput carries the sidebar's sessionID — both the banner's
+      // home and the most reliable "current session" source.
       render: (input?: { sessionID?: string }) => {
         if (input?.sessionID) currentSession.set(input.sessionID)
-        return <text fg={fg()}>{line()}</text>
+        return renderSidebarBlock(status(), ctx.theme)
       },
     }),
     ctx.ui.slot({
