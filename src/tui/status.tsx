@@ -1,4 +1,4 @@
-import { createSignal, For } from "solid-js"
+import { createSignal, For, Show } from "solid-js"
 import { Hopper, type OperationStatusResult } from "../rpc"
 import { bannerText, LIFECYCLE } from "./format"
 import { currentSession } from "./current-session"
@@ -20,6 +20,7 @@ export interface StatusCtx {
   ui: { slot: (spec: { append: string; render: (input?: { sessionID?: string }) => unknown }) => () => void }
   client: { rpc: (def: unknown) => HopperRpcClient }
   data: { on: (name: string, cb: (event: { data: unknown }) => void) => () => void }
+  storage?: { store: <T>(key: string, opts: { initial: T }) => [T, (fn: (draft: T) => T | void) => Promise<void>] }
   theme?: HopperTheme
   /** rpc calls must carry the plugin's location or the server consults its default registry */
   location?: unknown
@@ -29,6 +30,20 @@ export function registerStatus(ctx: StatusCtx): { cleanup: () => void; status: (
   const rpc = ctx.client.rpc(Hopper)
   const opts = () => (ctx.location === undefined ? {} : { location: ctx.location })
   const [status, setStatus] = createSignal<OperationStatusResult | null>(null)
+
+  // Ledger section collapse — persisted through storage when available (survives
+  // restarts, syncs across TUI instances), solid-signal fallback otherwise.
+  const ledgerView = (() => {
+    if (ctx.storage) {
+      const [view, update] = ctx.storage.store<{ open: boolean }>("ledgerView", { initial: { open: true } })
+      return {
+        get: () => view,
+        toggle: () => void update((draft) => { draft.open = !draft.open }).catch(() => {}),
+      }
+    }
+    const [view, setView] = createSignal<{ open: boolean }>({ open: true })
+    return { get: () => view(), toggle: () => setView((d) => ({ open: !d.open })) }
+  })()
 
   const refresh = async () => {
     try {
@@ -59,6 +74,7 @@ export function registerStatus(ctx: StatusCtx): { cleanup: () => void; status: (
     if (s === null || s.operation === null) {
       return <text fg={muted}>hop · no operation</text>
     }
+    const total = LIFECYCLE.reduce((n, key) => n + (s.findings[key as keyof typeof s.findings] ?? 0), 0)
     return (
       <box flexDirection="column">
         <box flexDirection="row" gap={1}>
@@ -76,21 +92,31 @@ export function registerStatus(ctx: StatusCtx): { cleanup: () => void; status: (
           {s.operation.target}
         </text>
         <text> </text>
-        <text fg={base}>
-          <b>Ledger</b>
-        </text>
-        <For each={LIFECYCLE}>
-          {(lifecycle) => (
-            <box flexDirection="row" gap={1}>
-              <text fg={base} flexGrow={1} wrapMode="none" truncate>
-                {lifecycle[0]!.toUpperCase() + lifecycle.slice(1)}
-              </text>
-              <text fg={muted} wrapMode="none" flexShrink={0}>
-                {String(s.findings[lifecycle as keyof typeof s.findings] ?? 0)}
-              </text>
-            </box>
-          )}
-        </For>
+        <box flexDirection="row" gap={1} onMouseDown={() => ledgerView.toggle()}>
+          <text fg={base} flexShrink={0}>
+            {ledgerView.get().open ? "▼" : "▶"}
+          </text>
+          <text fg={base} flexGrow={1} wrapMode="none" truncate>
+            <b>Ledger</b>
+            <Show when={!ledgerView.get().open}>
+              <span style={{ fg: muted }}>{` (${total})`}</span>
+            </Show>
+          </text>
+        </box>
+        <Show when={ledgerView.get().open}>
+          <For each={LIFECYCLE}>
+            {(lifecycle) => (
+              <box flexDirection="row" gap={1}>
+                <text fg={base} flexGrow={1} wrapMode="none" truncate>
+                  {lifecycle[0]!.toUpperCase() + lifecycle.slice(1)}
+                </text>
+                <text fg={muted} wrapMode="none" flexShrink={0}>
+                  {String(s.findings[lifecycle as keyof typeof s.findings] ?? 0)}
+                </text>
+              </box>
+            )}
+          </For>
+        </Show>
       </box>
     )
   }

@@ -21,6 +21,7 @@ export default Plugin.define({
         ui: context.ui,
         client: context.client,
         data: context.data,
+        storage: context.storage,
         theme: context.theme,
         location,
       } as unknown as StatusCtx).cleanup,
