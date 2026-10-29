@@ -1,7 +1,7 @@
 import { Plugin } from "@opencode/plugin/tui"
 import { registerStatus, type StatusCtx } from "./tui/status"
 import { registerPanel, type PanelCtx } from "./tui/panel"
-import { registerCommands, type CommandsCtx } from "./tui/commands"
+import { registerCommands, buildOperationPicker, type CommandsCtx } from "./tui/commands"
 import { registerNotifications, type NotificationsCtx } from "./tui/notifications"
 
 /**
@@ -16,6 +16,18 @@ export default Plugin.define({
     // rpc calls must carry the location or the server consults its default registry
     const location = context.location ?? context.data.location.default()
 
+    // one commands ctx feeds registerCommands and the /op picker; one picker
+    // instance keeps any stale open dialog superseded when the banner reopens it
+    const commandsCtx = {
+      keymap: context.keymap,
+      ui: context.ui,
+      client: context.client,
+      data: context.data,
+      session: { prompt: (input: { sessionID: string; text: string }) => context.client.session.prompt(input) },
+      location,
+    } as unknown as CommandsCtx
+    const openOperationPicker = buildOperationPicker(commandsCtx)
+
     cleanups.push(
       registerStatus({
         ui: context.ui,
@@ -24,6 +36,7 @@ export default Plugin.define({
         storage: context.storage,
         theme: context.theme,
         location,
+        pickOperation: () => void openOperationPicker(),
       } as unknown as StatusCtx).cleanup,
     )
 
@@ -37,16 +50,7 @@ export default Plugin.define({
       } as unknown as PanelCtx).cleanup,
     )
 
-    cleanups.push(
-      registerCommands({
-        keymap: context.keymap,
-        ui: context.ui,
-        client: context.client,
-        data: context.data,
-        session: { prompt: (input: { sessionID: string; text: string }) => context.client.session.prompt(input) },
-        location,
-      } as unknown as CommandsCtx).cleanup,
-    )
+    cleanups.push(registerCommands(commandsCtx).cleanup)
 
     cleanups.push(registerNotifications({ data: context.data, attention: context.attention } as unknown as NotificationsCtx).cleanup)
 

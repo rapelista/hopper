@@ -35,6 +35,13 @@ const opsList: OperationListItem[] = [
   opItem("op2", "shop", "example.test", { candidate: 0, observed: 2, verified: 0, reportable: 0, rejected: 0, stale: 0 }),
 ]
 
+// the /op picker's source: the two actives above plus a completed relic that
+// must never be offered (terminal operations are read-only history)
+const opsAll: OperationListItem[] = [
+  ...opsList,
+  { ...opItem("op3", "ghost", "retired.test", { candidate: 0, observed: 0, verified: 0, reportable: 0, rejected: 0, stale: 0 }), status: "completed" },
+]
+
 const settle = () => new Promise((r) => setTimeout(r, 5))
 
 // ---------------------------------------------------------------- status ----
@@ -372,20 +379,85 @@ describe("commands module (pure)", () => {
 })
 
 describe("commands module (registration)", () => {
+  interface SelectSpec {
+    title: string
+    current?: unknown
+    options: Array<{ value: string; title: string; description?: string }>
+    actions?: Array<{ bind: string; title: string; onTrigger: (value: string) => void }>
+  }
+
   function commandsCtx() {
     const layers: Array<Record<string, unknown>> = []
     const toasts: unknown[] = []
     const dialogs: string[] = []
     const calls: Array<{ method: string; input: unknown }> = []
     const subs: Record<string, Array<(e: { data: unknown }) => void>> = {}
+    const selects: Array<{ spec: SelectSpec; resolve: (value: unknown) => void }> = []
+    let confirmAnswer = true
     let openPanel: { name: string; sessionID: string } | undefined
+    // mutable on purpose — failure-path tests swap methods per test
+    const client: {
+      operationStatus: (input?: { sessionID?: string }) => Promise<OperationStatusResult>
+      operationsList: (input?: unknown) => Promise<{ items: OperationListItem[] }>
+      bind: (i: unknown) => Promise<unknown>
+      unbind: (i: unknown) => Promise<unknown>
+      setOperationStatus: (i: unknown) => Promise<unknown>
+      deleteOperation: (i: unknown) => Promise<unknown>
+      createOperation: (i: unknown) => Promise<unknown>
+      setOpsec: (i: unknown) => Promise<unknown>
+      events: { on: () => () => void }
+    } = {
+      // session-keyed: s1 is bound to juice (op1); s2 reads unbound
+      operationStatus: async (input: { sessionID?: string } = {}) => {
+        calls.push({ method: "operationStatus", input })
+        return input.sessionID === "s2" ? unbound : status
+      },
+      operationsList: async () => {
+        calls.push({ method: "operationsList", input: {} })
+        return { items: opsAll }
+      },
+      bind: async (input: unknown) => {
+        const i = input as { sessionID: string; operationId: string }
+        calls.push({ method: "bind", input: i })
+        return { operationId: i.operationId }
+      },
+      unbind: async (input: unknown) => {
+        const i = input as { sessionID: string }
+        calls.push({ method: "unbind", input: i })
+        return { operationId: null }
+      },
+      setOperationStatus: async (input: unknown) => {
+        const i = input as { operationId: string; status: string }
+        calls.push({ method: "setOperationStatus", input: i })
+        return { status: i.status }
+      },
+      deleteOperation: async (input: unknown) => {
+        const i = input as { operationId: string }
+        calls.push({ method: "deleteOperation", input: i })
+        return { ok: true }
+      },
+      createOperation: async (i: unknown) => {
+        calls.push({ method: "createOperation", input: i })
+        return { operation: { id: "op9", name: "example", target: "example.test", createdAt: "x" } }
+      },
+      setOpsec: async (i: unknown) => {
+        calls.push({ method: "setOpsec", input: i })
+        return { opsec: "strict" }
+      },
+      events: { on: () => () => {} },
+    }
     const ctx = {
       keymap: { layer: (factory: () => Record<string, unknown>) => { layers.push(factory()); return () => {} } },
       ui: {
         dialog: {
           prompt: async (i: { title: string }) => { dialogs.push(`prompt:${i.title}`); return "example.test" },
-          confirm: async (i: { title: string }) => { dialogs.push(`confirm:${i.title}`); return true },
-          select: async (i: unknown) => { dialogs.push("select"); return "strict" },
+          confirm: async (i: { title: string }) => { dialogs.push(`confirm:${i.title}`); return confirmAnswer },
+          // deferred like the real one: the dialog stays open until the test
+          // resolves it — footer actions do not close it either
+          select: (i: SelectSpec) => {
+            dialogs.push("select")
+            return new Promise<unknown>((resolve) => selects.push({ spec: i, resolve }))
+          },
         },
         toast: { show: (t: unknown) => { toasts.push(t) } },
         panel: {
@@ -394,34 +466,28 @@ describe("commands module (registration)", () => {
           current: () => openPanel,
         },
       },
-      client: {
-        rpc: () => ({
-          operationStatus: async () => status,
-          createOperation: async (i: unknown) => {
-            calls.push({ method: "createOperation", input: i })
-            return { operation: { id: "op2", name: "example", target: "example.test", createdAt: "x" } }
-          },
-          setOpsec: async (i: unknown) => { calls.push({ method: "setOpsec", input: i }); return { opsec: "strict" } },
-          events: { on: () => () => {} },
-        }),
-      },
+      client: { rpc: () => client },
       data: { on: (name: string, cb: (e: { data: unknown }) => void) => { (subs[name] ??= []).push(cb); return () => {} } },
       session: { prompt: async (i: unknown) => { calls.push({ method: "session.prompt", input: i }); return {} } },
     }
-    return { ctx, layers, toasts, dialogs, calls, subs }
+    return { ctx, client, layers, toasts, dialogs, calls, subs, selects, decline: () => { confirmAnswer = false } }
   }
 
   const commandsOf = (c: ReturnType<typeof commandsCtx>) =>
     c.layers[0]!.commands as Array<{ id: string; run: (input?: string) => unknown }>
 
-  test("registers pwn/opsec/ledger slash commands with slash names", () => {
+  // fire-and-settle: picker flows hold their select open, so run() may legitimately never resolve
+  const runCommand = async (c: ReturnType<typeof commandsCtx>, id: string, input?: string) => {
+    void commandsOf(c).find((cmd) => cmd.id === id)!.run(input)
+    await settle()
+  }
+
+  test("registers pwn/op/opsec/ledger slash commands with slash names", () => {
     const c = commandsCtx()
     registerCommands(c.ctx as never)
     const cmds = commandsOf(c) as Array<{ id: string; slash?: { name: string } }>
-    expect(cmds.map((cmd) => cmd.id)).toContain("hopper.pwn")
-    expect(cmds.map((cmd) => cmd.id)).toContain("hopper.opsec")
-    expect(cmds.map((cmd) => cmd.id)).toContain("hopper.ledger")
-    expect(cmds.map((cmd) => cmd.slash?.name)).toEqual(["pwn", "opsec", "ledger"])
+    expect(cmds.map((cmd) => cmd.id)).toEqual(["hopper.pwn", "hopper.op", "hopper.opsec", "hopper.ledger"])
+    expect(cmds.map((cmd) => cmd.slash?.name)).toEqual(["pwn", "op", "opsec", "ledger"])
   })
 
   test("ledger toggles: opens when closed, closes when already open", () => {
@@ -435,26 +501,48 @@ describe("commands module (registration)", () => {
     expect(c.calls.filter((call) => call.method === "panel.open")).toHaveLength(1)
   })
 
-  test("pwn: prompts target, confirms replacement, creates, toasts, submits kickoff", async () => {
+  test("pwn on a bound session: rebind confirm first, create carries the session, kickoff submits", async () => {
     const c = commandsCtx()
     registerCommands(c.ctx as never)
-    c.subs["tui.session.select"]![0]!({ data: { sessionID: "s1" } }) // a session is current
-    const pwn = commandsOf(c).find((cmd) => cmd.id === "hopper.pwn")!
-    await pwn.run("")
+    c.subs["tui.session.select"]![0]!({ data: { sessionID: "s1" } }) // s1 is bound to juice
+    await runCommand(c, "hopper.pwn", "")
     expect(c.dialogs).toContainEqual("prompt:Operation target")
-    expect(c.dialogs).toContainEqual("confirm:Replace active operation?")
-    expect(c.calls).toContainEqual({ method: "createOperation", input: { name: "example", target: "example.test" } })
+    expect(c.calls).toContainEqual({ method: "operationStatus", input: { sessionID: "s1" } })
+    expect(c.dialogs).toContainEqual("confirm:Start a new operation and rebind this session?")
+    expect(c.calls).toContainEqual({ method: "createOperation", input: { name: "example", target: "example.test", sessionID: "s1" } })
     expect(c.toasts.some((t) => JSON.stringify(t).includes("active"))).toBe(true)
     expect(c.calls.some((call) => call.method === "session.prompt" && JSON.stringify(call.input).includes("PTES"))).toBe(true)
   })
 
-  test("pwn without a current session: still creates, hints instead of submitting", async () => {
+  test("pwn decline is a cancel: nothing is created, the old operation keeps the session", async () => {
+    const c = commandsCtx()
+    c.decline()
+    registerCommands(c.ctx as never)
+    c.subs["tui.session.select"]![0]!({ data: { sessionID: "s1" } })
+    await runCommand(c, "hopper.pwn", "example.test")
+    expect(c.dialogs).toContainEqual("confirm:Start a new operation and rebind this session?")
+    expect(c.calls.some((call) => call.method === "createOperation")).toBe(false)
+    expect(c.calls.some((call) => call.method === "session.prompt")).toBe(false)
+  })
+
+  test("pwn on an unbound session: no confirm, create still carries the session", async () => {
+    const c = commandsCtx()
+    registerCommands(c.ctx as never)
+    c.subs["tui.session.select"]![0]!({ data: { sessionID: "s2" } }) // s2 reads unbound
+    await runCommand(c, "hopper.pwn", "example.test")
+    expect(c.calls).toContainEqual({ method: "operationStatus", input: { sessionID: "s2" } })
+    expect(c.dialogs.some((d) => d.startsWith("confirm:"))).toBe(false)
+    expect(c.calls).toContainEqual({ method: "createOperation", input: { name: "example", target: "example.test", sessionID: "s2" } })
+    expect(c.calls.some((call) => call.method === "session.prompt")).toBe(true)
+  })
+
+  test("pwn without a current session: creates unbound, hints instead of submitting", async () => {
     currentSession.reset()
     const c = commandsCtx()
     registerCommands(c.ctx as never)
-    const pwn = commandsOf(c).find((cmd) => cmd.id === "hopper.pwn")!
-    await pwn.run("example.test") // target given — no prompt dialog
+    await runCommand(c, "hopper.pwn", "example.test") // target given — no prompt dialog
     expect(c.dialogs).not.toContain("prompt:Operation target")
+    expect(c.calls.some((call) => call.method === "operationStatus")).toBe(false)
     expect(c.calls).toContainEqual({ method: "createOperation", input: { name: "example", target: "example.test" } })
     expect(c.calls.some((call) => call.method === "session.prompt")).toBe(false)
     expect(c.toasts.some((t) => JSON.stringify(t).includes("open a session"))).toBe(true)
@@ -468,9 +556,8 @@ describe("commands module (registration)", () => {
     }
     registerCommands(c.ctx as never)
     c.subs["tui.session.select"]![0]!({ data: { sessionID: "s1" } })
-    const pwn = commandsOf(c).find((cmd) => cmd.id === "hopper.pwn")!
-    await pwn.run("example.test")
-    expect(c.calls).toContainEqual({ method: "createOperation", input: { name: "example", target: "example.test" } })
+    await runCommand(c, "hopper.pwn", "example.test")
+    expect(c.calls).toContainEqual({ method: "createOperation", input: { name: "example", target: "example.test", sessionID: "s1" } })
     expect(c.toasts.some((t) => JSON.stringify(t).includes("kickoff prompt failed"))).toBe(true)
   })
 
@@ -484,13 +571,168 @@ describe("commands module (registration)", () => {
     expect(currentSession.get()).toBeUndefined()
   })
 
-  test("opsec runs the select dialog and sets the level", async () => {
+  test("opsec on a bound session: one level select naming the operation, setOpsec carries its id", async () => {
     const c = commandsCtx()
     registerCommands(c.ctx as never)
-    await commandsOf(c).find((cmd) => cmd.id === "hopper.opsec")!.run()
-    expect(c.dialogs).toContainEqual("select")
-    expect(c.calls).toContainEqual({ method: "setOpsec", input: { level: "strict" } })
+    c.subs["tui.session.select"]![0]!({ data: { sessionID: "s1" } })
+    await runCommand(c, "hopper.opsec")
+    expect(c.selects).toHaveLength(1) // direct — no picker stage
+    expect(c.selects[0]!.spec.title).toBe("Opsec — juice")
+    expect(c.selects[0]!.spec.current).toBe("strict")
+    c.selects[0]!.resolve("strict")
+    await settle()
+    expect(c.calls).toContainEqual({ method: "setOpsec", input: { operationId: "op1", level: "strict" } })
     expect(c.toasts.some((t) => JSON.stringify(t).includes("strict"))).toBe(true)
+  })
+
+  test("opsec sessionless: two stages — pick the operation, then the level", async () => {
+    currentSession.reset()
+    const c = commandsCtx()
+    registerCommands(c.ctx as never)
+    await runCommand(c, "hopper.opsec")
+    const picker = c.selects[0]!.spec
+    expect(picker.title).toBe("Set opsec on")
+    expect(picker.options.map((o) => o.title)).toEqual(["juice · localhost", "shop · example.test"])
+    expect(picker.actions).toBeUndefined() // the opsec stage carries no lifecycle actions
+    c.selects[0]!.resolve("op2")
+    await settle()
+    expect(c.selects[1]!.spec.title).toBe("Opsec — shop")
+    c.selects[1]!.resolve("strict")
+    await settle()
+    expect(c.calls).toContainEqual({ method: "setOpsec", input: { operationId: "op2", level: "strict" } })
+  })
+
+  test("opsec setOpsec failure surfaces as an error toast", async () => {
+    const c = commandsCtx()
+    c.client.setOpsec = async () => {
+      throw { type: "no_operation", message: "unknown operation op1" }
+    }
+    registerCommands(c.ctx as never)
+    c.subs["tui.session.select"]![0]!({ data: { sessionID: "s1" } })
+    await runCommand(c, "hopper.opsec")
+    c.selects[0]!.resolve("strict")
+    await settle()
+    expect(c.toasts.some((t) => (t as { variant?: string }).variant === "error" && JSON.stringify(t).includes("unknown operation"))).toBe(true)
+  })
+
+  test("op picker: actives only with findings summaries; selecting binds the current session", async () => {
+    const c = commandsCtx()
+    registerCommands(c.ctx as never)
+    c.subs["tui.session.select"]![0]!({ data: { sessionID: "s1" } })
+    await runCommand(c, "hopper.op")
+    const spec = c.selects[0]!.spec
+    expect(spec.title).toBe("Bind an operation")
+    expect(spec.options.map((o) => o.title)).toEqual(["juice · localhost", "shop · example.test"]) // ghost (completed) is absent
+    expect(spec.options.map((o) => o.description)).toEqual(["3 findings", "2 findings"])
+    expect(spec.actions!.map((a) => a.bind)).toEqual(["u", "c", "a", "d"])
+    c.selects[0]!.resolve("op2")
+    await settle()
+    expect(c.calls).toContainEqual({ method: "bind", input: { sessionID: "s1", operationId: "op2" } })
+    expect(c.toasts.some((t) => JSON.stringify(t).includes("shop"))).toBe(true)
+  })
+
+  test("op picker without a current session: warning toast, no dialog, no bind", async () => {
+    currentSession.reset()
+    const c = commandsCtx()
+    registerCommands(c.ctx as never)
+    await runCommand(c, "hopper.op")
+    expect(c.toasts.some((t) => JSON.stringify(t).includes("no current session"))).toBe(true)
+    expect(c.selects).toHaveLength(0)
+    expect(c.calls.some((call) => call.method === "bind")).toBe(false)
+  })
+
+  test("op picker with no active operations: warning toast instead of a dialog", async () => {
+    const c = commandsCtx()
+    c.client.operationsList = async () => ({ items: [opsAll[2]!] }) // only the completed ghost
+    registerCommands(c.ctx as never)
+    c.subs["tui.session.select"]![0]!({ data: { sessionID: "s1" } })
+    await runCommand(c, "hopper.op")
+    expect(c.toasts.some((t) => JSON.stringify(t).includes("no active operations"))).toBe(true)
+    expect(c.selects).toHaveLength(0)
+  })
+
+  test("lifecycle actions: complete/archive hit setOperationStatus on the highlighted op and re-open; a superseded select never binds", async () => {
+    const c = commandsCtx()
+    registerCommands(c.ctx as never)
+    c.subs["tui.session.select"]![0]!({ data: { sessionID: "s1" } })
+    await runCommand(c, "hopper.op")
+    c.selects[0]!.spec.actions!.find((a) => a.bind === "c")!.onTrigger("op2")
+    await settle()
+    expect(c.calls).toContainEqual({ method: "setOperationStatus", input: { operationId: "op2", status: "completed" } })
+    expect(c.toasts.some((t) => JSON.stringify(t).includes("completed"))).toBe(true)
+    expect(c.selects).toHaveLength(2) // re-opened with the fresh list
+    c.selects[1]!.spec.actions!.find((a) => a.bind === "a")!.onTrigger("op1")
+    await settle()
+    expect(c.calls).toContainEqual({ method: "setOperationStatus", input: { operationId: "op1", status: "archived" } })
+    expect(c.selects).toHaveLength(3)
+    // the first (superseded) select resolving late must NOT fall through to bind
+    c.selects[0]!.resolve("op2")
+    await settle()
+    expect(c.calls.some((call) => call.method === "bind")).toBe(false)
+  })
+
+  test("delete action: confirms first; a decline is a cancel — no delete, no re-open, the picker stays live", async () => {
+    const c = commandsCtx()
+    registerCommands(c.ctx as never)
+    c.subs["tui.session.select"]![0]!({ data: { sessionID: "s1" } })
+    await runCommand(c, "hopper.op")
+    c.decline()
+    c.selects[0]!.spec.actions!.find((a) => a.bind === "d")!.onTrigger("op2")
+    await settle()
+    expect(c.dialogs).toContainEqual("confirm:Delete operation?")
+    expect(c.calls.some((call) => call.method === "deleteOperation")).toBe(false)
+    expect(c.selects).toHaveLength(1) // no re-open after a cancel
+    c.selects[0]!.resolve("op1") // the picker survived the decline
+    await settle()
+    expect(c.calls).toContainEqual({ method: "bind", input: { sessionID: "s1", operationId: "op1" } })
+  })
+
+  test("delete action confirmed: deleteOperation runs and the picker re-opens", async () => {
+    const c = commandsCtx()
+    registerCommands(c.ctx as never)
+    c.subs["tui.session.select"]![0]!({ data: { sessionID: "s1" } })
+    await runCommand(c, "hopper.op")
+    c.selects[0]!.spec.actions!.find((a) => a.bind === "d")!.onTrigger("op2")
+    await settle()
+    expect(c.calls).toContainEqual({ method: "deleteOperation", input: { operationId: "op2" } })
+    expect(c.toasts.some((t) => JSON.stringify(t).includes("deleted"))).toBe(true)
+    expect(c.selects).toHaveLength(2)
+  })
+
+  test("unbind action: unbinds the current session, keeps the picker live (no re-open)", async () => {
+    const c = commandsCtx()
+    registerCommands(c.ctx as never)
+    c.subs["tui.session.select"]![0]!({ data: { sessionID: "s1" } })
+    await runCommand(c, "hopper.op")
+    c.selects[0]!.spec.actions!.find((a) => a.bind === "u")!.onTrigger("op1")
+    await settle()
+    expect(c.calls).toContainEqual({ method: "unbind", input: { sessionID: "s1" } })
+    expect(c.selects).toHaveLength(1)
+    c.selects[0]!.resolve("op2") // still open — a follow-up selection binds
+    await settle()
+    expect(c.calls).toContainEqual({ method: "bind", input: { sessionID: "s1", operationId: "op2" } })
+  })
+
+  test("bind typed errors surface as error toasts — thrown and resolved shapes", async () => {
+    const thrown = commandsCtx()
+    thrown.client.bind = async () => {
+      throw { type: "not_active", message: "operation op2 is completed, not active" }
+    }
+    registerCommands(thrown.ctx as never)
+    thrown.subs["tui.session.select"]![0]!({ data: { sessionID: "s1" } })
+    await runCommand(thrown, "hopper.op")
+    thrown.selects[0]!.resolve("op2")
+    await settle()
+    expect(thrown.toasts.some((t) => (t as { variant?: string }).variant === "error" && JSON.stringify(t).includes("not active"))).toBe(true)
+
+    const resolved = commandsCtx()
+    resolved.client.bind = async () => ({ type: "not_active", message: "operation op2 is completed, not active" })
+    registerCommands(resolved.ctx as never)
+    resolved.subs["tui.session.select"]![0]!({ data: { sessionID: "s1" } })
+    await runCommand(resolved, "hopper.op")
+    resolved.selects[0]!.resolve("op2")
+    await settle()
+    expect(resolved.toasts.some((t) => (t as { variant?: string }).variant === "error" && JSON.stringify(t).includes("not active"))).toBe(true)
   })
 })
 
