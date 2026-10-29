@@ -2,61 +2,283 @@ import { describe, expect, test, beforeAll, afterAll } from "bun:test"
 import { mkdirSync, rmSync } from "node:fs"
 import { join } from "node:path"
 import { tmpdir } from "node:os"
+import { existsSync } from "node:fs"
+import { Database } from "bun:sqlite"
 import { HopperStore } from "../src/lib/store"
-import { existsSync, readFileSync } from "node:fs"
 import { buildTools } from "../src/lib/tools"
 
-let configDir: string
+let root: string
 
 beforeAll(() => {
-  configDir = join(tmpdir(), "hopper-t10-" + Date.now())
-  rmSync(configDir, { recursive: true, force: true })
-  mkdirSync(configDir, { recursive: true })
+  root = join(tmpdir(), "hopper-t10-" + Date.now())
+  rmSync(root, { recursive: true, force: true })
+  mkdirSync(root, { recursive: true })
 })
 
 afterAll(() => {
-  rmSync(configDir, { recursive: true, force: true })
+  rmSync(root, { recursive: true, force: true })
 })
 
+/** Each test gets its own isolated config dir (its own store file). */
+function openStore(): { store: HopperStore; dir: string } {
+  const dir = join(root, "store-" + Math.random().toString(36).slice(2))
+  return { store: HopperStore.open(dir), dir }
+}
+
+function openRaw(dir: string): Database {
+  return new Database(join(dir, "data", "hopper.db"))
+}
+
 describe("HopperStore operations", () => {
-  test("createOperation makes the operation active", () => {
-    const store = HopperStore.open(configDir)
+  test("createOperation inserts an active operation and seeds its scopes row", () => {
+    const { store } = openStore()
     const op = store.createOperation("juice-shop", "http://localhost:3000")
     expect(op.status).toBe("active")
     expect(op.name).toBe("juice-shop")
-    const active = store.getActiveOperation()
-    expect(active?.id).toBe(op.id)
+    const ops = store.listOperations()
+    expect(ops).toHaveLength(1)
+    expect(ops[0]!.status).toBe("active")
+    expect(store.getScope(op.id)).toEqual({ targets: ["localhost"], strict: true })
     store.close()
   })
 
-  test("creating a second operation archives the first", () => {
-    const store = HopperStore.open(configDir)
-    const first = store.getActiveOperation()!
+  test("createOperation is additive: two operations stay active, each with a scopes row", () => {
+    const { store } = openStore()
+    const first = store.createOperation("juice-shop", "http://localhost:3000")
     const second = store.createOperation("dvwa", "http://localhost:8080")
     const ops = store.listOperations()
-    expect(ops.find((o) => o.id === first.id)?.status).toBe("archived")
+    expect(ops).toHaveLength(2)
+    expect(ops.find((o) => o.id === first.id)?.status).toBe("active")
     expect(ops.find((o) => o.id === second.id)?.status).toBe("active")
-    expect(store.getActiveOperation()?.id).toBe(second.id)
+    expect(store.getScope(first.id)).toEqual({ targets: ["localhost"], strict: true })
+    expect(store.getScope(second.id)).toEqual({ targets: ["localhost"], strict: true })
     store.close()
+  })
+
+  test("createOperation seeds the normalized target and does not write scope.json", () => {
+    const { store, dir } = openStore()
+    const op = store.createOperation("scoped-op", "http://Lab.Example.test:8080")
+    expect(store.getScope(op.id)).toEqual({ targets: ["lab.example.test"], strict: true })
+    store.close()
+    expect(existsSync(join(dir, "scope.json"))).toBe(false)
   })
 
   test("data persists across close and reopen", () => {
-    const store = HopperStore.open(configDir)
+    const { store, dir } = openStore()
     const before = store.listOperations().length
     store.close()
-    const reopened = HopperStore.open(configDir)
+    const reopened = HopperStore.open(dir)
     expect(reopened.listOperations().length).toBe(before)
-    expect(reopened.getActiveOperation()?.name).toBe("dvwa")
+    reopened.close()
+  })
+})
+
+describe("HopperStore bindings", () => {
+  test("upsertBinding → getBinding roundtrip", () => {
+    const { store } = openStore()
+    const op = store.createOperation("op", "lab.test")
+    store.upsertBinding("ses_1", op.id)
+    expect(store.getBinding("ses_1")).toEqual({ operation_id: op.id, mode: "bound" })
+    store.close()
+  })
+
+  test("getBinding on an unknown session returns null", () => {
+    const { store } = openStore()
+    expect(store.getBinding("ses_nobody")).toBeNull()
+    store.close()
+  })
+
+  test("setFree overwrites a bound binding (operation_id NULL)", () => {
+    const { store } = openStore()
+    const op = store.createOperation("op", "lab.test")
+    store.upsertBinding("ses_1", op.id)
+    store.setFree("ses_1")
+    expect(store.getBinding("ses_1")).toEqual({ operation_id: null, mode: "free" })
+    store.close()
+  })
+
+  test("upsertBinding overwrites a free binding and rebinds to a new operation", () => {
+    const { store } = openStore()
+    const a = store.createOperation("a", "a.test")
+    const b = store.createOperation("b", "b.test")
+    store.upsertBinding("ses_1", a.id)
+    store.setFree("ses_1")
+    store.upsertBinding("ses_1", b.id)
+    expect(store.getBinding("ses_1")).toEqual({ operation_id: b.id, mode: "bound" })
+    store.close()
+  })
+
+  test("clearBinding removes the binding", () => {
+    const { store } = openStore()
+    const op = store.createOperation("op", "lab.test")
+    store.upsertBinding("ses_1", op.id)
+    store.clearBinding("ses_1")
+    expect(store.getBinding("ses_1")).toBeNull()
+    store.close()
+  })
+
+  test("purgeSession removes the binding and is a no-op for unknown sessions", () => {
+    const { store } = openStore()
+    const op = store.createOperation("op", "lab.test")
+    store.upsertBinding("ses_1", op.id)
+    store.purgeSession("ses_nobody") // must not throw
+    store.purgeSession("ses_1")
+    expect(store.getBinding("ses_1")).toBeNull()
+    store.close()
+  })
+})
+
+describe("HopperStore resolveSession", () => {
+  test("bound mode joins the operation and its scope", () => {
+    const { store } = openStore()
+    const op = store.createOperation("op", "http://Lab.Test:8080")
+    store.upsertBinding("ses_1", op.id)
+    const res = store.resolveSession("ses_1")
+    expect(res.mode).toBe("bound")
+    if (res.mode !== "bound") return
+    expect(res.operation).toMatchObject({ id: op.id, name: "op", target: "http://Lab.Test:8080", status: "active" })
+    expect(res.scope).toEqual({ targets: ["lab.test"], strict: true })
+    store.close()
+  })
+
+  test("free mode", () => {
+    const { store } = openStore()
+    store.setFree("ses_1")
+    expect(store.resolveSession("ses_1")).toEqual({ mode: "free" })
+    store.close()
+  })
+
+  test("unknown session → unbound", () => {
+    const { store } = openStore()
+    expect(store.resolveSession("ses_nobody")).toEqual({ mode: "unbound" })
+    store.close()
+  })
+
+  test("a bound row whose operation vanished degrades to unbound, never throws", () => {
+    const { store, dir } = openStore()
+    store.close()
+    const db = openRaw(dir)
+    db.run("INSERT INTO bindings (session_id, operation_id, mode, updated_at) VALUES ('ses_ghost', 'no-such-op', 'bound', '2025-01-01T00:00:00.000Z')")
+    db.close()
+    const reopened = HopperStore.open(dir)
+    expect(reopened.resolveSession("ses_ghost")).toEqual({ mode: "unbound" })
+    reopened.close()
+  })
+})
+
+describe("HopperStore lifecycle", () => {
+  test("setOperationStatus flips status and unbinds every session of that op", () => {
+    const { store } = openStore()
+    const op = store.createOperation("op", "lab.test")
+    store.upsertBinding("ses_1", op.id)
+    store.upsertBinding("ses_2", op.id)
+    const updated = store.setOperationStatus(op.id, "completed")
+    expect(updated).toMatchObject({ id: op.id, status: "completed" })
+    expect(store.listOperations().find((o) => o.id === op.id)?.status).toBe("completed")
+    expect(store.getBinding("ses_1")).toBeNull()
+    expect(store.getBinding("ses_2")).toBeNull()
+    store.close()
+  })
+
+  test("setOperationStatus on an unknown operation returns null", () => {
+    const { store } = openStore()
+    expect(store.setOperationStatus("no-such-op", "archived")).toBeNull()
+    store.close()
+  })
+
+  test("deleteOperation removes scopes, bindings, findings, evidence, and orphaned evidence_findings links", () => {
+    const { store, dir } = openStore()
+    const op = store.createOperation("doomed", "doomed.test")
+    const survivor = store.createOperation("survivor", "alive.test")
+    const f = store.addFinding(op.id, { title: "SQLi", severity: "high", target: "doomed.test" })
+    const ev = store.saveEvidence(op.id, { id: "ev-1", kind: "request", sha256: "a".repeat(64), size: 10, created_at: new Date().toISOString(), meta: {} }, "GET /")
+    store.attachEvidence(f.id, ev.id)
+    const sf = store.addFinding(survivor.id, { title: "XSS", severity: "low", target: "alive.test" })
+    // cross-link: survivor evidence → doomed finding (an orphaned link after delete)
+    const sev = store.saveEvidence(survivor.id, { id: "ev-2", kind: "note", sha256: "b".repeat(64), size: 5, created_at: new Date().toISOString(), meta: {} }, "note")
+    store.attachEvidence(f.id, sev.id)
+    // the survivor's own link must survive the delete
+    store.attachEvidence(sf.id, sev.id)
+    store.upsertBinding("ses_1", op.id)
+
+    expect(store.deleteOperation(op.id)).toBe(true)
+    expect(store.listOperations().map((o) => o.id)).toEqual([survivor.id])
+    store.close()
+
+    const db = openRaw(dir)
+    const count = (table: string, where = "", params: string[] = []): number =>
+      (db.query(`SELECT COUNT(*) AS n FROM ${table} ${where}`).get(...params) as { n: number }).n
+    expect(count("operations")).toBe(1)
+    expect(count("scopes")).toBe(1)
+    expect(count("findings")).toBe(1)
+    expect(count("evidence")).toBe(1)
+    expect(count("bindings")).toBe(0)
+    // every link row touching the deleted op's finding or evidence is gone;
+    // the survivor's own link stays
+    expect(count("evidence_findings", "WHERE finding_id = ?", [f.id])).toBe(0)
+    expect(count("evidence_findings", "WHERE evidence_id IN ('ev-1')")).toBe(0)
+    expect(count("evidence_findings")).toBe(1)
+    db.close()
+  })
+
+  test("deleteOperation on an unknown operation returns false", () => {
+    const { store } = openStore()
+    expect(store.deleteOperation("no-such-op")).toBe(false)
+    store.close()
+  })
+})
+
+describe("HopperStore listOperationsWithCounts", () => {
+  test("counts findings per operation across all six statuses", () => {
+    const { store, dir } = openStore()
+    const a = store.createOperation("a", "a.test")
+    const b = store.createOperation("b", "b.test")
+    const fa = store.addFinding(a.id, { title: "one", severity: "high", target: "a.test" })
+    store.addFinding(a.id, { title: "two", severity: "low", target: "a.test" })
+    store.updateFindingStatus(fa.id, "observed")
+    const fb = store.addFinding(b.id, { title: "three", severity: "info", target: "b.test" })
+    store.updateFindingStatus(fb.id, "rejected")
+    // give the two ops distinct updated_at values so the updated_at DESC order is deterministic
+    store.close()
+    const db = openRaw(dir)
+    db.run("UPDATE operations SET updated_at = '2025-01-01T00:00:01.000Z' WHERE id = ?", [a.id])
+    db.run("UPDATE operations SET updated_at = '2025-01-01T00:00:02.000Z' WHERE id = ?", [b.id])
+    db.close()
+    const reopened = HopperStore.open(dir)
+    const list = reopened.listOperationsWithCounts()
+    expect(list.map((o) => o.id)).toEqual([b.id, a.id]) // updated_at DESC
+    expect(list.find((o) => o.id === a.id)?.findings).toEqual({
+      candidate: 1,
+      observed: 1,
+      verified: 0,
+      reportable: 0,
+      rejected: 0,
+      stale: 0,
+    })
+    expect(list.find((o) => o.id === b.id)?.findings).toEqual({
+      candidate: 0,
+      observed: 0,
+      verified: 0,
+      reportable: 0,
+      rejected: 1,
+      stale: 0,
+    })
     reopened.close()
   })
 
-  test("createOperation writes the scope file", () => {
-    const store = HopperStore.open(configDir)
-    store.createOperation("scoped-op", "lab.example.test")
+  test("an operation without findings reports all-zero counts", () => {
+    const { store } = openStore()
+    const op = store.createOperation("empty", "empty.test")
+    const list = store.listOperationsWithCounts()
+    expect(list.find((o) => o.id === op.id)?.findings).toEqual({
+      candidate: 0,
+      observed: 0,
+      verified: 0,
+      reportable: 0,
+      rejected: 0,
+      stale: 0,
+    })
     store.close()
-    const scope = JSON.parse(readFileSync(join(configDir, "scope.json"), "utf8")) as { targets: string[] }
-    expect(scope.targets).toEqual(["lab.example.test"])
-    expect(existsSync(join(configDir, "data", "hopper.db"))).toBe(true)
   })
 })
 

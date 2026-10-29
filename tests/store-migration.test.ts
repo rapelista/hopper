@@ -113,8 +113,8 @@ describe("HopperStore schema migration", () => {
     }
     expect(JSON.parse(scope.targets)).toEqual(["legacy.example.test"])
     expect(scope.strict).toBe(0)
-    // bindings table exists, starts empty
-    expect(tableSql(db, "bindings")).toContain("mode")
+    // bindings table exists with the real mode CHECK, starts empty
+    expect(tableSql(db, "bindings")).toContain("'bound','free'")
     expect(count(db, "bindings")).toBe(0)
     db.close()
     // the file is left on disk untouched

@@ -1,7 +1,7 @@
 import { Database } from "bun:sqlite"
 import { mkdirSync } from "node:fs"
 import { join } from "node:path"
-import { loadScope, saveScope } from "./scope"
+import { loadScope, normalizeTarget } from "./scope"
 import { assertTransition, FindingError, type FindingStatus, type Severity } from "./findings"
 import type { CapturedEvidence, EvidenceKind } from "./evidence"
 
@@ -16,10 +16,25 @@ export interface Operation {
   id: string
   name: string
   target: string
-  status: "active" | "archived"
+  status: "active" | "completed" | "archived"
   created_at: string
   updated_at: string
 }
+
+/** Per-operation finding counts, one key per lifecycle status. */
+export interface FindingsCounts {
+  candidate: number
+  observed: number
+  verified: number
+  reportable: number
+  rejected: number
+  stale: number
+}
+
+export type SessionResolution =
+  | { mode: "unbound" }
+  | { mode: "free" }
+  | { mode: "bound"; operation: Operation; scope: { targets: string[]; strict: boolean } }
 
 export interface Finding {
   id: string
@@ -195,9 +210,16 @@ export class HopperStore {
     this.db.close()
   }
 
+  /**
+   * Additive: creating an operation never touches other operations (many
+   * operations-per-directory is the model now). Seeds the operation's scopes
+   * row with the normalized target (strict by default) in the same
+   * transaction — the scopes row is the boundary, not the old scope.json
+   * relic. Side effects of the pre-binding design (archive-others, scope.json
+   * write) are gone.
+   */
   createOperation(name: string, target: string): Operation {
     const now = new Date().toISOString()
-    this.db.run("UPDATE operations SET status = 'archived', updated_at = ? WHERE status = 'active'", [now])
     const op: Operation = {
       id: crypto.randomUUID(),
       name,
@@ -206,23 +228,189 @@ export class HopperStore {
       created_at: now,
       updated_at: now,
     }
-    this.db.run(
-      "INSERT INTO operations (id, name, target, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
-      [op.id, op.name, op.target, op.status, op.created_at, op.updated_at],
-    )
-    if (this.configDir) {
-      // scope bootstrap is owned by the store so every creation path activates
-      // the fence the dialog consults (dialog-always: the fence asks, never blocks)
-      saveScope(this.configDir, { targets: [target], strict: true, created: now })
+    this.db.run("BEGIN")
+    try {
+      this.db.run(
+        "INSERT INTO operations (id, name, target, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+        [op.id, op.name, op.target, op.status, op.created_at, op.updated_at],
+      )
+      this.db.run(
+        "INSERT INTO scopes (operation_id, targets, strict, created_at, updated_at) VALUES (?, ?, 1, ?, ?)",
+        [op.id, JSON.stringify([normalizeTarget(target)]), now, now],
+      )
+      this.db.run("COMMIT")
+    } catch (error) {
+      this.db.run("ROLLBACK")
+      throw error
     }
     return op
   }
 
+  /**
+   * @deprecated singleton-era read. Kept only until Task 6 reworks the
+   * index.ts/tools.ts/report.ts callers onto the binding API; delete then.
+   * Returns the most recently updated active operation, if any.
+   */
   getActiveOperation(): Operation | null {
     const row = this.db.query("SELECT * FROM operations WHERE status = 'active' ORDER BY updated_at DESC LIMIT 1").get() as
       | Record<string, unknown>
       | null
     return row ? rowToOperation(row) : null
+  }
+
+  // -- session bindings -----------------------------------------------------
+
+  /** Bind a session to an operation (mode `bound`). Upsert by session. */
+  upsertBinding(sessionID: string, operationId: string): void {
+    this.db.run(
+      "INSERT INTO bindings (session_id, operation_id, mode, updated_at) VALUES (?, ?, 'bound', ?) " +
+        "ON CONFLICT(session_id) DO UPDATE SET operation_id = excluded.operation_id, mode = 'bound', updated_at = excluded.updated_at",
+      [sessionID, operationId, new Date().toISOString()],
+    )
+  }
+
+  /** Mark a session free: no operation bound, mode `free`, operation_id NULL. */
+  setFree(sessionID: string): void {
+    this.db.run(
+      "INSERT INTO bindings (session_id, operation_id, mode, updated_at) VALUES (?, NULL, 'free', ?) " +
+        "ON CONFLICT(session_id) DO UPDATE SET operation_id = NULL, mode = 'free', updated_at = excluded.updated_at",
+      [sessionID, new Date().toISOString()],
+    )
+  }
+
+  /** Remove a session's binding row (explicit unbind). */
+  clearBinding(sessionID: string): void {
+    this.db.run("DELETE FROM bindings WHERE session_id = ?", [sessionID])
+  }
+
+  /** Remove a session's binding row (session-ended cleanup; no-op if unknown). */
+  purgeSession(sessionID: string): void {
+    this.db.run("DELETE FROM bindings WHERE session_id = ?", [sessionID])
+  }
+
+  getBinding(sessionID: string): { operation_id: string | null; mode: "bound" | "free" } | null {
+    const row = this.db.query("SELECT operation_id, mode FROM bindings WHERE session_id = ?").get(sessionID) as
+      | { operation_id: string | null; mode: string }
+      | null
+    return row ? { operation_id: row.operation_id, mode: row.mode as "bound" | "free" } : null
+  }
+
+  /**
+   * What a session may touch: the bound operation + its scope, free, or
+   * unbound. A bound row whose operation (or scopes row) vanished is corrupt
+   * state — degrades to unbound. Never throws on a bad store read.
+   */
+  resolveSession(sessionID: string): SessionResolution {
+    try {
+      const row = this.db.query("SELECT operation_id, mode FROM bindings WHERE session_id = ?").get(sessionID) as
+        | { operation_id: string | null; mode: string }
+        | null
+      if (!row) return { mode: "unbound" }
+      if (row.mode !== "bound" || row.operation_id === null) return { mode: "free" }
+      const opRow = this.db.query("SELECT * FROM operations WHERE id = ?").get(row.operation_id) as
+        | Record<string, unknown>
+        | null
+      const scope = opRow ? this.getScope(row.operation_id) : null
+      if (!opRow || !scope) return { mode: "unbound" }
+      return { mode: "bound", operation: rowToOperation(opRow), scope }
+    } catch {
+      return { mode: "unbound" } // corrupt read degrades — a binding never crashes the host
+    }
+  }
+
+  /** The operation's scope fence, or null when it has none. strict is 0/1 in the DB, boolean here. */
+  getScope(operationId: string): { targets: string[]; strict: boolean } | null {
+    const row = this.db.query("SELECT targets, strict FROM scopes WHERE operation_id = ?").get(operationId) as
+      | { targets: string; strict: number }
+      | null
+    if (!row) return null
+    try {
+      const targets = JSON.parse(row.targets) as unknown
+      if (!Array.isArray(targets)) return null
+      return { targets: targets as string[], strict: row.strict === 1 }
+    } catch {
+      return null // corrupt targets JSON — same degrade path as every other read
+    }
+  }
+
+  // -- operation lifecycle --------------------------------------------------
+
+  /**
+   * Flip an operation to `completed` or `archived` and unbind every session
+   * bound to it (a closed operation owns no sessions) — one transaction.
+   * Returns the updated operation, or null when the id is unknown.
+   */
+  setOperationStatus(operationId: string, status: "completed" | "archived"): Operation | null {
+    const existing = this.db.query("SELECT * FROM operations WHERE id = ?").get(operationId) as
+      | Record<string, unknown>
+      | null
+    if (!existing) return null
+    const now = new Date().toISOString()
+    this.db.run("BEGIN")
+    try {
+      this.db.run("UPDATE operations SET status = ?, updated_at = ? WHERE id = ?", [status, now, operationId])
+      this.db.run("DELETE FROM bindings WHERE operation_id = ?", [operationId])
+      this.db.run("COMMIT")
+    } catch (error) {
+      this.db.run("ROLLBACK")
+      throw error
+    }
+    return { ...rowToOperation(existing), status, updated_at: now }
+  }
+
+  /**
+   * Delete an operation and everything hanging off it in one explicit
+   * transaction — scopes row, bindings, findings, evidence, and any orphaned
+   * evidence_findings links in both directions. Foreign keys stay OFF, so
+   * nothing here may rely on cascades. Returns false for an unknown id.
+   */
+  deleteOperation(operationId: string): boolean {
+    const exists = this.db.query("SELECT 1 FROM operations WHERE id = ?").get(operationId) !== null
+    if (!exists) return false
+    this.db.run("BEGIN")
+    try {
+      this.db.run("DELETE FROM evidence_findings WHERE finding_id IN (SELECT id FROM findings WHERE operation_id = ?)", [operationId])
+      this.db.run("DELETE FROM evidence_findings WHERE evidence_id IN (SELECT id FROM evidence WHERE operation_id = ?)", [operationId])
+      this.db.run("DELETE FROM findings WHERE operation_id = ?", [operationId])
+      this.db.run("DELETE FROM evidence WHERE operation_id = ?", [operationId])
+      this.db.run("DELETE FROM bindings WHERE operation_id = ?", [operationId])
+      this.db.run("DELETE FROM scopes WHERE operation_id = ?", [operationId])
+      this.db.run("DELETE FROM operations WHERE id = ?", [operationId])
+      this.db.run("COMMIT")
+    } catch (error) {
+      this.db.run("ROLLBACK")
+      throw error
+    }
+    return true
+  }
+
+  /** Every operation (all statuses, newest first) with its per-status finding counts. */
+  listOperationsWithCounts(): Array<Operation & { findings: FindingsCounts }> {
+    const rows = this.db
+      .query("SELECT * FROM operations ORDER BY updated_at DESC")
+      .all() as Array<Record<string, unknown>>
+    const countRows = this.db
+      .query("SELECT operation_id, status, COUNT(*) AS n FROM findings GROUP BY operation_id, status")
+      .all() as Array<{ operation_id: string; status: string; n: number }>
+    const byOp = new Map<string, Map<string, number>>()
+    for (const r of countRows) {
+      let counts = byOp.get(r.operation_id)
+      if (!counts) {
+        counts = new Map()
+        byOp.set(r.operation_id, counts)
+      }
+      counts.set(r.status, r.n)
+    }
+    return rows.map((row) => {
+      const findings: FindingsCounts = { candidate: 0, observed: 0, verified: 0, reportable: 0, rejected: 0, stale: 0 }
+      const counts = byOp.get(row.id as string)
+      if (counts) {
+        for (const [status, n] of counts) {
+          if (status in findings) findings[status as keyof FindingsCounts] = n
+        }
+      }
+      return { ...rowToOperation(row), findings }
+    })
   }
 
   listOperations(): Operation[] {
