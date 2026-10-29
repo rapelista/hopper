@@ -16,6 +16,15 @@ export interface OperationSummary {
   createdAt: string
 }
 
+export interface OperationListItem {
+  id: string
+  name: string
+  target: string
+  createdAt: string
+  status: string
+  findings: FindingsCounts
+}
+
 export interface FindingSummary {
   id: string
   title: string
@@ -38,6 +47,17 @@ export interface OperationStatusResult {
   operation: OperationSummary | null
   opsec: "normal" | "strict"
   findings: FindingsCounts
+}
+
+export type GuardAnswerChoice = "bind" | "free" | "allow-once" | "deny"
+
+export interface GuardAskData {
+  askId: string
+  sessionID: string
+  messageID: string
+  tool: string
+  targets: string[]
+  reason: string
 }
 
 export interface OperationChangedData {
@@ -81,11 +101,46 @@ const findingsCountsSchema = {
   additionalProperties: false,
 } as const
 
+const operationListItemSchema = {
+  type: "object",
+  properties: {
+    id: { type: "string" },
+    name: { type: "string" },
+    target: { type: "string" },
+    createdAt: { type: "string" },
+    status: { type: "string" },
+    findings: findingsCountsSchema,
+  },
+  required: ["id", "name", "target", "createdAt", "status", "findings"],
+  additionalProperties: false,
+} as const
+
+const guardAskDataSchema = {
+  type: "object",
+  properties: {
+    askId: { type: "string" },
+    sessionID: { type: "string" },
+    messageID: { type: "string" },
+    tool: { type: "string" },
+    targets: { type: "array", items: { type: "string" } },
+    reason: { type: "string" },
+  },
+  required: ["askId", "sessionID", "messageID", "tool", "targets", "reason"],
+  additionalProperties: false,
+} as const
+
 export const Hopper = Rpc.define({
   id: "hopper",
   methods: {
+    /**
+     * Deprecated: no sessionID ⇒ returns nulls; kept one release for compatibility.
+     */
     operationStatus: {
-      input: { type: "object", properties: {}, additionalProperties: false },
+      input: {
+        type: "object",
+        properties: { sessionID: { type: "string" } },
+        additionalProperties: false,
+      },
       output: {
         type: "object",
         properties: {
@@ -133,6 +188,7 @@ export const Hopper = Rpc.define({
         properties: {
           name: { type: "string" },
           target: { type: "string" },
+          sessionID: { type: "string" },
         },
         required: ["name", "target"],
         additionalProperties: false,
@@ -147,7 +203,10 @@ export const Hopper = Rpc.define({
     setOpsec: {
       input: {
         type: "object",
-        properties: { level: { type: "string", enum: ["normal", "strict"] } },
+        properties: {
+          operationId: { type: "string" },
+          level: { type: "string", enum: ["normal", "strict"] },
+        },
         required: ["level"],
         additionalProperties: false,
       },
@@ -158,12 +217,125 @@ export const Hopper = Rpc.define({
         additionalProperties: false,
       },
       errors: {
-        no_scope: {
+        no_operation: {
           type: "object",
           properties: { message: { type: "string" } },
           required: ["message"],
           additionalProperties: false,
         },
+      },
+    },
+    operationsList: {
+      input: { type: "object", properties: {}, additionalProperties: false },
+      output: {
+        type: "object",
+        properties: { items: { type: "array", items: operationListItemSchema } },
+        required: ["items"],
+        additionalProperties: false,
+      },
+    },
+    bind: {
+      input: {
+        type: "object",
+        properties: {
+          sessionID: { type: "string" },
+          operationId: { type: "string" },
+        },
+        required: ["sessionID", "operationId"],
+        additionalProperties: false,
+      },
+      output: {
+        type: "object",
+        properties: { operationId: { type: "string" } },
+        required: ["operationId"],
+        additionalProperties: false,
+      },
+      errors: {
+        not_active: {
+          type: "object",
+          properties: { message: { type: "string" } },
+          required: ["message"],
+          additionalProperties: false,
+        },
+      },
+    },
+    unbind: {
+      input: {
+        type: "object",
+        properties: { sessionID: { type: "string" } },
+        required: ["sessionID"],
+        additionalProperties: false,
+      },
+      output: {
+        type: "object",
+        properties: { operationId: { type: "null" } },
+        required: ["operationId"],
+        additionalProperties: false,
+      },
+    },
+    setOperationStatus: {
+      input: {
+        type: "object",
+        properties: {
+          operationId: { type: "string" },
+          status: { type: "string", enum: ["completed", "archived"] },
+        },
+        required: ["operationId", "status"],
+        additionalProperties: false,
+      },
+      output: {
+        type: "object",
+        properties: { status: { type: "string" } },
+        required: ["status"],
+        additionalProperties: false,
+      },
+      errors: {
+        no_operation: {
+          type: "object",
+          properties: { message: { type: "string" } },
+          required: ["message"],
+          additionalProperties: false,
+        },
+      },
+    },
+    deleteOperation: {
+      input: {
+        type: "object",
+        properties: { operationId: { type: "string" } },
+        required: ["operationId"],
+        additionalProperties: false,
+      },
+      output: {
+        type: "object",
+        properties: { ok: { type: "boolean", const: true } },
+        required: ["ok"],
+        additionalProperties: false,
+      },
+      errors: {
+        no_operation: {
+          type: "object",
+          properties: { message: { type: "string" } },
+          required: ["message"],
+          additionalProperties: false,
+        },
+      },
+    },
+    guardAnswer: {
+      input: {
+        type: "object",
+        properties: {
+          askId: { type: "string" },
+          choice: { type: "string", enum: ["bind", "free", "allow-once", "deny"] },
+          operationId: { type: "string" },
+        },
+        required: ["askId", "choice"],
+        additionalProperties: false,
+      },
+      output: {
+        type: "object",
+        properties: { accepted: { type: "boolean" } },
+        required: ["accepted"],
+        additionalProperties: false,
       },
     },
   },
@@ -187,6 +359,17 @@ export const Hopper = Rpc.define({
         required: ["operationId", "findingId", "status"],
         additionalProperties: false,
       },
+    },
+    "binding.changed": {
+      schema: {
+        type: "object",
+        properties: { sessionID: { type: "string" } },
+        required: ["sessionID"],
+        additionalProperties: false,
+      },
+    },
+    "guard.ask": {
+      schema: guardAskDataSchema,
     },
   },
 })

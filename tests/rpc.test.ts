@@ -32,22 +32,44 @@ async function setup() {
 }
 
 describe("Hopper rpc contract", () => {
-  test("defines the hopper id, four methods, two events", () => {
+  test("defines the hopper id, ten methods, four events", () => {
     expect(Hopper.id).toBe("hopper")
-    expect(Object.keys(Hopper.methods).sort()).toEqual(["createOperation", "findings", "operationStatus", "setOpsec"])
-    expect(Object.keys(Hopper.events).sort()).toEqual(["finding.changed", "operation.changed"])
+    expect(Object.keys(Hopper.methods).sort()).toEqual([
+      "bind",
+      "createOperation",
+      "deleteOperation",
+      "findings",
+      "guardAnswer",
+      "operationStatus",
+      "operationsList",
+      "setOperationStatus",
+      "setOpsec",
+      "unbind",
+    ])
+    expect(Object.keys(Hopper.events).sort()).toEqual(["binding.changed", "finding.changed", "guard.ask", "operation.changed"])
   })
 
-  test("setOpsec declares the no_scope error", () => {
-    expect(Object.keys((Hopper.methods as Record<string, { errors?: Record<string, unknown> }>).setOpsec!.errors!)).toContain("no_scope")
+  test("setOpsec declares the no_operation error", () => {
+    expect(Object.keys((Hopper.methods as Record<string, { errors?: Record<string, unknown> }>).setOpsec!.errors!)).toEqual(["no_operation"])
   })
 })
 
 describe("hopper rpc handlers", () => {
-  test("server registers the Hopper contract with all four handlers", async () => {
+  test("server registers the Hopper contract with all ten handlers", async () => {
     const m = await setup()
     expect(m.rpcDefs).toContain(Hopper)
-    expect(Object.keys(m.rpcHandlers).sort()).toEqual(["createOperation", "findings", "operationStatus", "setOpsec"])
+    expect(Object.keys(m.rpcHandlers).sort()).toEqual([
+      "bind",
+      "createOperation",
+      "deleteOperation",
+      "findings",
+      "guardAnswer",
+      "operationStatus",
+      "operationsList",
+      "setOperationStatus",
+      "setOpsec",
+      "unbind",
+    ])
   })
 
   test("operationStatus on an empty store", async () => {
@@ -71,11 +93,11 @@ describe("hopper rpc handlers", () => {
     expect(m.rpcEvents).toContainEqual({ name: "operation.changed", data: { operationId: res.operation.id } })
   })
 
-  test("setOpsec flips strict and emits; no scope file → no_scope error", async () => {
+  test("setOpsec flips strict and emits; no scope file → no_operation error", async () => {
     rmSync(join(configDir, "scope.json"))
     const m = await setup()
     const no = await (m.rpcHandlers.setOpsec as (i: unknown, c: unknown) => Promise<any>)({ level: "strict" }, handlerCtx())
-    expect(no.type).toBe("no_scope")
+    expect(no.type).toBe("no_operation")
     await (m.rpcHandlers.createOperation as (i: unknown, c: unknown) => Promise<any>)({ name: "a", target: "a.test" }, handlerCtx())
     const res = await (m.rpcHandlers.setOpsec as (i: unknown, c: unknown) => Promise<any>)({ level: "normal" }, handlerCtx())
     expect(res.opsec).toBe("normal")
@@ -83,13 +105,13 @@ describe("hopper rpc handlers", () => {
     expect(m.rpcEvents.some((e) => e.name === "operation.changed")).toBe(true)
   })
 
-  test("corrupt scope.json: operationStatus stays normal, setOpsec → no_scope (RF#1)", async () => {
+  test("corrupt scope.json: operationStatus stays normal, setOpsec → no_operation (RF#1)", async () => {
     writeFileSync(join(configDir, "scope.json"), "{corrupt")
     const m = await setup()
     const status = await (m.rpcHandlers.operationStatus as (i: unknown, c: unknown) => Promise<any>)({}, handlerCtx())
     expect(status.opsec).toBe("normal")
     const err = await (m.rpcHandlers.setOpsec as (i: unknown, c: unknown) => Promise<any>)({ level: "strict" }, handlerCtx())
-    expect(err.type).toBe("no_scope")
+    expect(err.type).toBe("no_operation")
   })
 
   test("finding tool mutation notifies finding.changed through rpc", async () => {

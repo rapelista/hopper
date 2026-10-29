@@ -266,7 +266,8 @@ export default Plugin.define({
           store.close()
         }
       },
-      setOpsec: async (input: unknown, context: { error: (type: "no_scope", message: string, data: { message: string }) => unknown; signal: AbortSignal }) => {
+      // Task 6 replaces this stub
+      setOpsec: async (input: unknown, context: { error: (type: "no_operation", message: string, data: { message: string }) => unknown; signal: AbortSignal }) => {
         const { level } = input as { level: "normal" | "strict" }
         let scope: ReturnType<typeof loadScope> = null
         try {
@@ -275,8 +276,8 @@ export default Plugin.define({
           scope = null // unreadable scope cannot be adjusted — typed error, never a crash
         }
         if (scope === null) {
-          return context.error("no_scope", "no active scope to adjust — create an operation first (/pwn)", {
-            message: "no active scope to adjust — create an operation first (/pwn)",
+          return context.error("no_operation", "no active scope to adjust — create an operation and pass its operationId", {
+            message: "no active scope to adjust — create an operation and pass its operationId",
           })
         }
         saveScope(configDir, { ...scope, strict: level === "strict" })
@@ -290,6 +291,30 @@ export default Plugin.define({
         // emit failure must not fail a mutation that landed
         void rpcReg.events.emit("operation.changed", { operationId }).catch(() => {})
         return { opsec: level }
+      },
+      // Task 6 replaces this stub
+      operationsList: async () => {
+        throw new Error("[hopper] not implemented until Task 6")
+      },
+      // Task 6 replaces this stub
+      bind: async () => {
+        throw new Error("[hopper] not implemented until Task 6")
+      },
+      // Task 6 replaces this stub
+      unbind: async () => {
+        throw new Error("[hopper] not implemented until Task 6")
+      },
+      // Task 6 replaces this stub
+      setOperationStatus: async () => {
+        throw new Error("[hopper] not implemented until Task 6")
+      },
+      // Task 6 replaces this stub
+      deleteOperation: async () => {
+        throw new Error("[hopper] not implemented until Task 6")
+      },
+      // Task 6 replaces this stub
+      guardAnswer: async () => {
+        throw new Error("[hopper] not implemented until Task 6")
       },
     })
     const notify: HopperNotify = (event) => {
