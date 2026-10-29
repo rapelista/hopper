@@ -304,11 +304,13 @@ export default Plugin.define({
       },
       findings: async (input: unknown) => {
         const { operationId } = input as { operationId?: string }
+        // R7: the singleton-era active-op fallback is gone — without an
+        // operationId the ledger reads empty (callers name the op they want).
+        if (operationId === undefined) return { items: [] }
         const store = HopperStore.open(configDir)
         try {
-          const opId = operationId ?? store.getActiveOperation()?.id
           const items = store
-            .listFindings(opId)
+            .listFindings(operationId)
             .map((f) => ({ id: f.id, title: f.title, severity: f.severity, status: f.status, target: f.target, createdAt: f.created_at }))
           return { items }
         } finally {
@@ -444,15 +446,31 @@ export default Plugin.define({
           })
         }
         for (const sid of affected) void rpcReg.events.emit("binding.changed", { sessionID: sid }).catch(() => {})
+        // the TUI ops list refreshes on operation.changed — a deletion reports the null id
+        void rpcReg.events.emit("operation.changed", { operationId: null }).catch(() => {})
         return { ok: true }
       },
       guardAnswer: async (input: unknown) => {
         const { askId, choice, operationId } = input as { askId: string; choice: GuardAnswerChoice; operationId?: string }
-        if (choice === "bind" && operationId === undefined) {
-          // controller ruling: never write a NULL-op bound row. The contract
-          // exposes no error shape on guardAnswer, so the type-safe refusal
-          // is { accepted: false } — the ask stays pending for a well-formed answer.
-          return { accepted: false }
+        if (choice === "bind") {
+          // controller ruling: never write a bound row the store cannot
+          // honor. A missing OR nonexistent operationId is refused the same
+          // type-safe way — { accepted: false }, the ask stays pending for a
+          // well-formed answer.
+          let known = false
+          if (operationId !== undefined) {
+            try {
+              const store = HopperStore.open(configDir)
+              try {
+                known = store.listOperations().some((o) => o.id === operationId)
+              } finally {
+                store.close()
+              }
+            } catch {
+              known = false // unreadable store cannot verify the op — refuse like nonexistent
+            }
+          }
+          if (!known) return { accepted: false }
         }
         return { accepted: gate.answer(askId, choice, operationId) }
       },

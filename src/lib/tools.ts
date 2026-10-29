@@ -1,5 +1,5 @@
-import { loadScope, scopeViolations, normalizeTarget } from "./scope"
-import { HopperStore } from "./store"
+import { scopeViolations, normalizeTarget, type Scope } from "./scope"
+import { HopperStore, type SessionResolution } from "./store"
 import { captureEvidence } from "./evidence"
 import { writeReport } from "./report"
 import { buildShareBundle } from "./share"
@@ -79,6 +79,25 @@ export function sha256Hex(data: string | Uint8Array): string {
   return hasher.digest("hex")
 }
 
+/**
+ * What the tool's execution context says about the calling session. No
+ * sessionID (or an unreadable store) reads as unbound — ask, never block.
+ */
+function resolveToolSession(configDir: string, context: ToolSessionContext | undefined): SessionResolution {
+  const sessionID = context?.sessionID
+  if (typeof sessionID !== "string" || sessionID === "") return { mode: "unbound" }
+  try {
+    const store = HopperStore.open(configDir)
+    try {
+      return store.resolveSession(sessionID)
+    } finally {
+      store.close()
+    }
+  } catch {
+    return { mode: "unbound" } // unreadable store behaves like unbound: dialogs, never blocks
+  }
+}
+
 function redactHeaders(headers: Record<string, string>): Record<string, string> {
   const out: Record<string, string> = {}
   for (const [key, value] of Object.entries(headers)) {
@@ -99,24 +118,31 @@ export async function request(
 
   for (let hop = 0; hop <= MAX_HOPS; hop++) {
     // Dialog-always on redirect hops only — hop 0 is the initial target the
-    // execute.before hook already owns. Unreadable scope behaves like no
-    // scope: ask, never block.
+    // execute.before hook already owns. The confirm resolves by the calling
+    // session's binding: bound ⇒ fence against the bound operation's store
+    // scope row; free ⇒ pass silently; unbound (or an unreadable store) ⇒
+    // the binary confirm for every fenceable hop host. Never blocks alone.
     if (hop > 0) {
-      let scope: ReturnType<typeof loadScope> = null
-      try {
-        scope = loadScope(configDir)
-      } catch {
-        scope = null
-      }
-      const violations = scopeViolations(scope, [new URL(currentUrl).hostname])
-      if (violations.length > 0 && handlers.confirm) {
-        await handlers.confirm(
-          violations,
-          scope === null
-            ? `redirect hop → ${violations.join(", ")} — no active operation scope`
-            : `redirect hop → ${violations.join(", ")} is outside the operation scope`,
-          handlers.context,
-        )
+      const resolution = resolveToolSession(configDir, handlers.context)
+      if (resolution.mode !== "free") {
+        const scope: Scope | null =
+          resolution.mode === "bound"
+            ? {
+                targets: resolution.scope.targets,
+                strict: resolution.scope.strict,
+                created: resolution.operation.created_at,
+              }
+            : null
+        const violations = scopeViolations(scope, [new URL(currentUrl).hostname])
+        if (violations.length > 0 && handlers.confirm) {
+          await handlers.confirm(
+            violations,
+            resolution.mode === "bound"
+              ? `redirect hop → ${violations.join(", ")} is outside the operation scope`
+              : `no operation bound — allow redirect to ${violations.join(", ")}?`,
+            handlers.context,
+          )
+        }
       }
     }
 
@@ -289,6 +315,33 @@ export interface ToolDef {
 const SEVERITIES = ["critical", "high", "medium", "low", "info"]
 const FINDING_STATUSES = ["candidate", "observed", "verified", "reportable", "rejected", "stale"]
 
+/**
+ * Informational no-binding content (spec §5b): the guard stays the only
+ * fence — this tells the agent how to get an operation, it never refuses a
+ * call the guard would allow.
+ */
+const NO_OPERATION_BOUND = "no operation bound to this session — bind one (/op) or pass operationId"
+
+/**
+ * Session-scoped operation default: an explicit operationId always wins and
+ * works for any operation; without one, the calling session's bound
+ * operation is the default. Free/unbound sessions get the no-binding
+ * content (content, never a throw — that is the tool contract).
+ */
+function sessionOperation(
+  store: HopperStore,
+  operationId: unknown,
+  context: unknown,
+): { ok: true; opId: string } | { ok: false; content: string } {
+  if (typeof operationId === "string" && operationId !== "") return { ok: true, opId: operationId }
+  const sessionID = (context as ToolSessionContext | undefined)?.sessionID
+  if (typeof sessionID === "string" && sessionID !== "") {
+    const resolution = store.resolveSession(sessionID)
+    if (resolution.mode === "bound") return { ok: true, opId: resolution.operation.id }
+  }
+  return { ok: false, content: NO_OPERATION_BOUND }
+}
+
 export function buildTools(
   configDir: string,
   opts?: { confirm?: ConfirmScopeEscape; notify?: HopperNotify },
@@ -389,7 +442,7 @@ export function buildTools(
     {
       name: "operation",
       description:
-        "Ground truth for 'what am I working on'. Creates, lists, or reports the active operation: a named engagement against one target boundary. Creating an operation archives the previous one and writes the active scope (scoped tools confirm with the operator when a target falls outside it). action=status returns the active operation; action=list returns the operation history; action=create needs name and target (host, wildcard domain, or CIDR — URLs are normalized to their hostname).",
+        "Ground truth for 'what am I working on'. Creates, lists, or reports this session's bound operation: a named engagement against one target boundary. action=status reports the session's bound operation (or how to get one); action=list returns the whole operation history; action=create needs name and target (host, wildcard domain, or CIDR — URLs are normalized to their hostname). Creating is additive — no other operation is archived or touched — and it never binds this session: the operator binds via /op (or the unbound-scope dialog), and until a binding exists the ledger tools need an explicit operationId. Scoped tools confirm with the operator when a target falls outside the bound operation's scope.",
       input: {
         type: "object",
         properties: {
@@ -400,7 +453,7 @@ export function buildTools(
         required: ["action"],
         additionalProperties: false,
       },
-      async execute(input: { action: "create" | "status" | "list"; name?: string; target?: string }) {
+      async execute(input: { action: "create" | "status" | "list"; name?: string; target?: string }, context?: unknown) {
         const store = HopperStore.open(configDir)
         try {
           if (input.action === "create") {
@@ -411,14 +464,18 @@ export function buildTools(
             } catch {
               // best-effort — a missed notification never blocks the tool
             }
-            return { content: `Active operation: ${op.name} (target: ${op.target})\nScope file written — every scoped tool now enforces this boundary.` }
+            return {
+              content: `Operation ${op.name} created (target: ${op.target}, id: ${op.id}).\nNo session is bound to it yet — the operator binds this session via /op or the unbound-scope dialog; until then pass this id as operationId to the ledger tools.`,
+            }
           }
           if (input.action === "status") {
-            const op = store.getActiveOperation()
+            const sessionID = (context as ToolSessionContext | undefined)?.sessionID
+            const resolution = typeof sessionID === "string" && sessionID !== "" ? store.resolveSession(sessionID) : null
             return {
-              content: op
-                ? `Active operation: ${op.name}\nTarget: ${op.target}\nStarted: ${op.created_at}`
-                : "No active operation. Create one with action=create (name + target), or /pwn <target>.",
+              content:
+                resolution?.mode === "bound"
+                  ? `Bound operation: ${resolution.operation.name} (id: ${resolution.operation.id})\nTarget: ${resolution.operation.target}\nStarted: ${resolution.operation.created_at}`
+                  : NO_OPERATION_BOUND,
             }
           }
           const ops = store.listOperations()
@@ -432,12 +489,12 @@ export function buildTools(
     {
       name: "finding",
       description:
-        "The findings ledger — findings do not live in chat. action=add records a candidate (severity critical|high|medium|low|info, target, notes); action=status promotes along the lifecycle candidate → observed → verified → reportable (illegal jumps are refused; rejected/stale close a finding); action=list filters by status/operation; action=update patches title/severity/notes. Attach proof with the evidence tool before promoting. The workflow is not allowed to pretend every idea is reportable.",
+        "The findings ledger — findings do not live in chat. action=add records a candidate (severity critical|high|medium|low|info, target, notes); action=status promotes along the lifecycle candidate → observed → verified → reportable (illegal jumps are refused; rejected/stale close a finding); action=list shows an operation's findings; action=update patches title/severity/notes. operationId defaults to the session's bound operation — with none bound, pass operationId explicitly. Attach proof with the evidence tool before promoting. The workflow is not allowed to pretend every idea is reportable.",
       input: {
         type: "object",
         properties: {
           action: { type: "string", enum: ["add", "list", "update", "status"], description: "What to do" },
-          operationId: { type: "string", description: "Operation id (defaults to active)" },
+          operationId: { type: "string", description: "Operation id (defaults to the session's bound operation)" },
           title: { type: "string", description: "Finding title (add/update)" },
           severity: { type: "string", enum: SEVERITIES, description: "Severity (add/update)" },
           target: { type: "string", description: "Affected host/URL (add)" },
@@ -449,14 +506,14 @@ export function buildTools(
         required: ["action"],
         additionalProperties: false,
       },
-      async execute(input: Record<string, any>) {
+      async execute(input: Record<string, any>, context?: unknown) {
         const store = HopperStore.open(configDir)
         try {
-          const opId = input.operationId ?? store.getActiveOperation()?.id ?? null
           if (input.action === "add") {
-            if (!opId) return { content: "No active operation — create one first (operation action=create or /pwn)." }
+            const resolved = sessionOperation(store, input.operationId, context)
+            if (!resolved.ok) return { content: resolved.content }
             if (!input.title || !input.severity || !input.target) return { content: "add needs title, severity, and target." }
-            const f = store.addFinding(opId, { title: input.title, severity: input.severity, target: input.target, notes: input.notes })
+            const f = store.addFinding(resolved.opId, { title: input.title, severity: input.severity, target: input.target, notes: input.notes })
             try {
               notify?.({ type: "finding.changed", data: { operationId: f.operation_id, findingId: f.id, status: f.status } })
             } catch {
@@ -465,7 +522,9 @@ export function buildTools(
             return { content: `Finding ${f.id} recorded as candidate: [${f.severity}] ${f.title}` }
           }
           if (input.action === "list") {
-            const findings = store.listFindings(opId ?? undefined)
+            const resolved = sessionOperation(store, input.operationId, context)
+            if (!resolved.ok) return { content: resolved.content }
+            const findings = store.listFindings(resolved.opId)
             if (findings.length === 0) return { content: "No findings recorded." }
             return { content: findings.map((f) => `- [${f.status}/${f.severity}] ${f.title} (${f.target}) id=${f.id}`).join("\n") }
           }
@@ -499,7 +558,7 @@ export function buildTools(
     {
       name: "evidence",
       description:
-        "Attach proof to the operation — chain of custody for everything the operator may later report. action=capture stores content (a raw request/response, command output, file excerpt, or note) with kind + SHA256 + size + optional meta, and returns the evidence id; action=attach links evidence to a finding; action=list shows evidence for the operation, optionally filtered by finding. Promote findings to verified/reportable only with evidence attached.",
+        "Attach proof to the operation — chain of custody for everything the operator may later report. action=capture stores content (a raw request/response, command output, file excerpt, or note) with kind + SHA256 + size + optional meta, and returns the evidence id; action=attach links evidence to a finding; action=list shows evidence for the operation, optionally filtered by finding. operationId defaults to the session's bound operation — with none bound, pass operationId explicitly. Promote findings to verified/reportable only with evidence attached.",
       input: {
         type: "object",
         properties: {
@@ -507,22 +566,22 @@ export function buildTools(
           kind: { type: "string", enum: ["request", "response", "command", "file", "note"], description: "Evidence kind (capture)" },
           content: { type: "string", description: "The evidence payload verbatim (capture)" },
           meta: { type: "object", additionalProperties: { type: "string" }, description: "Optional metadata (url, command, source)" },
-          operationId: { type: "string", description: "Operation id (defaults to active)" },
+          operationId: { type: "string", description: "Operation id (defaults to the session's bound operation)" },
           findingId: { type: "string", description: "Finding id (attach, or filter list)" },
           evidenceId: { type: "string", description: "Evidence id (attach)" },
         },
         required: ["action"],
         additionalProperties: false,
       },
-      async execute(input: Record<string, any>) {
+      async execute(input: Record<string, any>, context?: unknown) {
         const store = HopperStore.open(configDir)
         try {
-          const opId = input.operationId ?? store.getActiveOperation()?.id ?? null
           if (input.action === "capture") {
-            if (!opId) return { content: "No active operation — create one first." }
+            const resolved = sessionOperation(store, input.operationId, context)
+            if (!resolved.ok) return { content: resolved.content }
             if (!input.kind || input.content === undefined) return { content: "capture needs kind and content." }
             const cap = captureEvidence(input.kind, input.content, input.meta ?? {})
-            store.saveEvidence(opId, cap, input.content)
+            store.saveEvidence(resolved.opId, cap, input.content)
             return { content: `Evidence ${cap.id} captured (${cap.kind}, ${cap.size} bytes, sha256 ${cap.sha256.slice(0, 16)}…)` }
           }
           if (input.action === "attach") {
@@ -530,8 +589,9 @@ export function buildTools(
             store.attachEvidence(input.findingId, input.evidenceId)
             return { content: `Evidence ${input.evidenceId} attached to finding ${input.findingId}.` }
           }
-          if (!opId) return { content: "No active operation." }
-          const items = store.listEvidence(opId, input.findingId)
+          const resolved = sessionOperation(store, input.operationId, context)
+          if (!resolved.ok) return { content: resolved.content }
+          const items = store.listEvidence(resolved.opId, input.findingId)
           if (items.length === 0) return { content: "No evidence recorded." }
           return { content: items.map((e) => `- ${e.kind} ${e.id} (${e.size}B, sha256 ${e.sha256.slice(0, 16)}…) ${e.created_at}`).join("\n") }
         } finally {
@@ -542,15 +602,24 @@ export function buildTools(
     {
       name: "report",
       description:
-        "Produce the signed deliverable for the engagement: a markdown report generated from operation state — never fabricated in chat. Includes the operation summary, findings table ordered by severity, reportable findings with their attached evidence (ids + sha256 prefixes), and a timestamp. Writes to reports/ and returns the path.",
+        "Produce the signed deliverable for the engagement: a markdown report generated from operation state — never fabricated in chat. Includes the operation summary, findings table ordered by severity, reportable findings with their attached evidence (ids + sha256 prefixes), and a timestamp. operationId defaults to the session's bound operation — with none bound, pass operationId explicitly. Writes to reports/ and returns the path.",
       input: {
         type: "object",
-        properties: { operationId: { type: "string", description: "Operation id (defaults to active)" } },
+        properties: { operationId: { type: "string", description: "Operation id (defaults to the session's bound operation)" } },
         additionalProperties: false,
       },
-      async execute(input: { operationId?: string }) {
+      async execute(input: { operationId?: string }, context?: unknown) {
+        let opId: string
+        const store = HopperStore.open(configDir)
         try {
-          const path = writeReport(configDir, input.operationId)
+          const resolved = sessionOperation(store, input.operationId, context)
+          if (!resolved.ok) return { content: resolved.content }
+          opId = resolved.opId
+        } finally {
+          store.close()
+        }
+        try {
+          const path = writeReport(configDir, opId)
           return { content: `Report written: ${path}` }
         } catch (err) {
           return { content: err instanceof Error ? err.message : String(err) }
@@ -560,21 +629,21 @@ export function buildTools(
     {
       name: "share",
       description:
-        "Export a redacted, tamper-evident bundle of the operation so it can be reviewed, resumed, or handed off: the operation record, every finding with its lifecycle state, and all evidence with secret-bearing values (authorization, cookies, api keys, tokens) redacted. Returns the bundle path and a SHA256 manifest over the canonical JSON — any later edit to the operation changes the manifest.",
+        "Export a redacted, tamper-evident bundle of the operation so it can be reviewed, resumed, or handed off: the operation record, every finding with its lifecycle state, and all evidence with secret-bearing values (authorization, cookies, api keys, tokens) redacted. operationId defaults to the session's bound operation — with none bound, pass operationId explicitly. Returns the bundle path and a SHA256 manifest over the canonical JSON — any later edit to the operation changes the manifest.",
       input: {
         type: "object",
-        properties: { operationId: { type: "string", description: "Operation id (defaults to active)" } },
+        properties: { operationId: { type: "string", description: "Operation id (defaults to the session's bound operation)" } },
         additionalProperties: false,
       },
-      async execute(input: { operationId?: string }) {
+      async execute(input: { operationId?: string }, context?: unknown) {
         const store = HopperStore.open(configDir)
         try {
-          const opId = input.operationId ?? store.getActiveOperation()?.id
-          if (!opId) return { content: "No active operation to share." }
-          const { bundle, manifestSha256 } = buildShareBundle(store, opId)
+          const resolved = sessionOperation(store, input.operationId, context)
+          if (!resolved.ok) return { content: resolved.content }
+          const { bundle, manifestSha256 } = buildShareBundle(store, resolved.opId)
           const shareDir = join(configDir, "share")
           mkdirSync(shareDir, { recursive: true })
-          const path = join(shareDir, `${opId}.json`)
+          const path = join(shareDir, `${resolved.opId}.json`)
           const { writeFileSync } = await import("node:fs")
           writeFileSync(path, JSON.stringify({ manifestSha256, bundle }, null, 2))
           return { content: `Share bundle written: ${path}\nManifest sha256: ${manifestSha256}` }

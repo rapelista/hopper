@@ -1,8 +1,9 @@
-import { describe, expect, test, beforeAll, afterAll, afterEach } from "bun:test"
+import { describe, expect, test, beforeAll, afterAll, beforeEach, afterEach } from "bun:test"
 import { mkdirSync, rmSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { tmpdir } from "node:os"
 import hopperPlugin, { bashScopeGuard, buildTools, setUnboundGateFactory } from "../src/index"
+import { request } from "../src/lib/tools"
 import type { Scope } from "../src/lib/scope"
 import { HopperStore } from "../src/lib/store"
 import { createUnboundGate, type GuardAsk, type UnboundGate } from "../src/lib/unbound-gate"
@@ -456,6 +457,70 @@ describe("hopper v2 plugin", () => {
     expect(a.resources).toEqual(["scanme.nmap.org"])
   })
 
+  test("http-request redirect confirm (wired): bound session fences against the op's store scope row", async () => {
+    bindSession("ses_redir_bound") // operation target: example.test
+    const asserts: unknown[] = []
+    const { ctx, addedTools } = makeMockCtx(tmpProject, { assert: async (i: unknown) => { asserts.push(i) } })
+    await (hopperPlugin as { setup: (ctx: unknown) => Promise<unknown> }).setup(ctx)
+    const tool = addedTools.find((t) => t.name === "http-request")! as {
+      execute: (input: unknown, context: unknown) => Promise<{ content: string }>
+    }
+    let n = 0
+    const origFetch = globalThis.fetch
+    globalThis.fetch = (async () => {
+      n++
+      return n === 1
+        ? new Response(null, { status: 302, headers: { location: "http://scanme.nmap.org/x" } })
+        : new Response("ok")
+    }) as unknown as typeof fetch
+    try {
+      const res = await tool.execute(
+        { url: "https://example.test/" },
+        { sessionID: "ses_redir_bound", agent: "pentest", messageID: "m1", id: "c1" },
+      )
+      expect(res.content).toContain("ok")
+    } finally {
+      globalThis.fetch = origFetch
+    }
+    expect(asserts.length).toBe(1) // hop 0 was in scope: only the redirect hop dialoged
+    const a = asserts[0] as { resources: string[]; metadata: { reason: string } }
+    expect(a.resources).toEqual(["scanme.nmap.org"])
+    expect(a.metadata.reason).toContain("outside the operation scope")
+  })
+
+  test("http-request redirect confirm (wired): free session never raises the mid-tool dialog", async () => {
+    const store = HopperStore.open(configDir)
+    try {
+      store.setFree("ses_redir_free")
+    } finally {
+      store.close()
+    }
+    const asserts: unknown[] = []
+    const { ctx, addedTools } = makeMockCtx(tmpProject, { assert: async (i: unknown) => { asserts.push(i) } })
+    await (hopperPlugin as { setup: (ctx: unknown) => Promise<unknown> }).setup(ctx)
+    const tool = addedTools.find((t) => t.name === "http-request")! as {
+      execute: (input: unknown, context: unknown) => Promise<{ content: string }>
+    }
+    let n = 0
+    const origFetch = globalThis.fetch
+    globalThis.fetch = (async () => {
+      n++
+      return n === 1
+        ? new Response(null, { status: 302, headers: { location: "http://scanme.nmap.org/x" } })
+        : new Response("ok")
+    }) as unknown as typeof fetch
+    try {
+      const res = await tool.execute(
+        { url: "https://example.test/" },
+        { sessionID: "ses_redir_free", agent: "pentest", messageID: "m1", id: "c1" },
+      )
+      expect(res.content).toContain("ok")
+    } finally {
+      globalThis.fetch = origFetch
+    }
+    expect(asserts.length).toBe(0) // free: neither the hook nor the mid-tool confirm dialogs
+  })
+
   test("session context hook pushes the bound operation's block per session", async () => {
     const opA = bindSession("ses_ctx_a", "alpha.test")
     const opB = bindSession("ses_ctx_b", "beta.test") // seeded later: the legacy global-active pick would return this one
@@ -685,5 +750,337 @@ describe("guard: free and unbound sessions (binding resolution + gate)", () => {
     } finally {
       rmSync(brokenProject, { recursive: true, force: true })
     }
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Task 7: agent tools are session-scoped — the bound operation is the
+// default, never an implicit "latest active" pick.
+// ---------------------------------------------------------------------------
+
+describe("agent tools: session-scoped operation defaults (Task 7)", () => {
+  const NO_BINDING = "no operation bound to this session — bind one (/op) or pass operationId"
+  let dir: string
+
+  beforeEach(() => {
+    dir = join(tmpdir(), "hopper-t7-tools-" + Date.now() + "-" + crypto.randomUUID().slice(0, 8))
+    mkdirSync(dir, { recursive: true })
+  })
+
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true })
+  })
+
+  const tool = (name: string) => buildTools(dir).find((t) => t.name === name)!
+
+  /**
+   * The discriminating fixture: the session is bound to op1 while op2 was
+   * created later (the singleton-era code would default every tool to op2,
+   * the most recently updated active operation).
+   */
+  const bindThenCreateNewer = (sessionID: string) => {
+    const store = HopperStore.open(dir)
+    try {
+      const bound = store.createOperation("bound-one", "one.test")
+      store.upsertBinding(sessionID, bound.id)
+      const newer = store.createOperation("newer-one", "two.test")
+      return { bound, newer }
+    } finally {
+      store.close()
+    }
+  }
+
+  test("finding add in a bound session lands on the bound operation, not the newest active one", async () => {
+    const { bound } = bindThenCreateNewer("ses_t7_finding")
+    const res = await tool("finding").execute(
+      { action: "add", title: "XSS in search", severity: "high", target: "one.test" },
+      { sessionID: "ses_t7_finding" },
+    )
+    expect(res.content).toContain("recorded as candidate")
+    const store = HopperStore.open(dir)
+    try {
+      const findings = store.listFindings(bound.id)
+      expect(findings).toHaveLength(1)
+      expect(findings[0]!.title).toBe("XSS in search")
+      expect(store.listFindings()).toHaveLength(1) // nothing landed on the newer op
+    } finally {
+      store.close()
+    }
+  })
+
+  test("finding add with no binding (unbound, free, or contextless) returns the no-binding content and writes no row", async () => {
+    bindThenCreateNewer("ses_other") // an active op exists — must NOT leak in as a default
+    const store = HopperStore.open(dir)
+    try {
+      store.setFree("ses_t7_free")
+    } finally {
+      store.close()
+    }
+    const call = { action: "add", title: "XSS", severity: "high", target: "one.test" } as const
+    for (const context of [{ sessionID: "ses_t7_unbound" }, { sessionID: "ses_t7_free" }, undefined]) {
+      const res = await tool("finding").execute(call, context)
+      expect(res.content).toBe(NO_BINDING)
+    }
+    const store2 = HopperStore.open(dir)
+    try {
+      expect(store2.listFindings()).toHaveLength(0)
+    } finally {
+      store2.close()
+    }
+  })
+
+  test("finding honors an explicit operationId over the binding (and with no binding at all)", async () => {
+    const { bound, newer } = bindThenCreateNewer("ses_t7_explicit")
+    const viaOverride = await tool("finding").execute(
+      { action: "add", operationId: newer.id, title: "on the newer op", severity: "low", target: "two.test" },
+      { sessionID: "ses_t7_explicit" },
+    )
+    expect(viaOverride.content).toContain("recorded as candidate")
+    const withoutBinding = await tool("finding").execute(
+      { action: "add", operationId: bound.id, title: "explicit from unbound", severity: "low", target: "one.test" },
+      { sessionID: "ses_t7_nobinding" },
+    )
+    expect(withoutBinding.content).toContain("recorded as candidate")
+    const store = HopperStore.open(dir)
+    try {
+      expect(store.listFindings(newer.id).map((f) => f.title)).toEqual(["on the newer op"])
+      expect(store.listFindings(bound.id).map((f) => f.title)).toEqual(["explicit from unbound"])
+    } finally {
+      store.close()
+    }
+  })
+
+  test("finding list defaults to the bound op's ledger; no binding reads the same no-binding content", async () => {
+    const { bound } = bindThenCreateNewer("ses_t7_list")
+    const store = HopperStore.open(dir)
+    try {
+      store.addFinding(bound.id, { title: "bound-ledger-item", severity: "info", target: "one.test" })
+    } finally {
+      store.close()
+    }
+    const boundList = await tool("finding").execute({ action: "list" }, { sessionID: "ses_t7_list" })
+    expect(boundList.content).toContain("bound-ledger-item")
+    const unboundList = await tool("finding").execute({ action: "list" }, { sessionID: "ses_t7_unbound_list" })
+    expect(unboundList.content).toBe(NO_BINDING)
+  })
+
+  test("evidence capture lands on the bound op; no binding returns the no-binding content and stores nothing", async () => {
+    const { bound } = bindThenCreateNewer("ses_t7_evidence")
+    const ok = await tool("evidence").execute(
+      { action: "capture", kind: "response", content: "HTTP/1.1 200 OK" },
+      { sessionID: "ses_t7_evidence" },
+    )
+    expect(ok.content).toContain("captured")
+    const refused = await tool("evidence").execute(
+      { action: "capture", kind: "response", content: "HTTP/1.1 500 KO" },
+      { sessionID: "ses_t7_evidence_unbound" },
+    )
+    expect(refused.content).toBe(NO_BINDING)
+    const store = HopperStore.open(dir)
+    try {
+      const items = store.listEvidence(bound.id)
+      expect(items).toHaveLength(1)
+      expect(items[0]!.content).toBe("HTTP/1.1 200 OK")
+    } finally {
+      store.close()
+    }
+  })
+
+  test("report defaults to the bound op; no binding returns the no-binding content instead of throwing", async () => {
+    const { bound } = bindThenCreateNewer("ses_t7_report")
+    const res = await tool("report").execute({}, { sessionID: "ses_t7_report" })
+    expect(res.content).toContain("Report written:")
+    const { readFileSync } = await import("node:fs")
+    const path = res.content.replace("Report written: ", "")
+    expect(readFileSync(path, "utf8")).toContain("bound-one") // the BOUND op, not the newest active one
+    const refused = await tool("report").execute({}, { sessionID: "ses_t7_report_unbound" })
+    expect(refused.content).toBe(NO_BINDING)
+  })
+
+  test("share defaults to the bound op; no binding returns the no-binding content", async () => {
+    const { bound } = bindThenCreateNewer("ses_t7_share")
+    const res = await tool("share").execute({}, { sessionID: "ses_t7_share" })
+    expect(res.content).toContain("Share bundle written:")
+    const { readFileSync } = await import("node:fs")
+    const bundle = JSON.parse(readFileSync(res.content.replace("Share bundle written: ", "").split("\n")[0]!, "utf8"))
+    expect(bundle.bundle.operation.id).toBe(bound.id)
+    const refused = await tool("share").execute({}, { sessionID: "ses_t7_share_unbound" })
+    expect(refused.content).toBe(NO_BINDING)
+  })
+
+  test("operation create creates WITHOUT binding and describes the binding handoff", async () => {
+    const res = await tool("operation").execute(
+      { action: "create", name: "nomad", target: "https://nomad.test:8443" },
+      { sessionID: "ses_t7_create" },
+    )
+    expect(res.content).toContain("nomad")
+    expect(res.content).not.toContain("archives") // the singleton-era copy is gone
+    expect(res.content).not.toContain("Scope file written") // the scope row lives in the store now
+    expect(res.content).toContain("bind") // the handoff (operator binds via /op or the dialog) is described
+    const desc = tool("operation").description
+    expect(desc).not.toContain("archives the previous one")
+    const store = HopperStore.open(dir)
+    try {
+      expect(store.getBinding("ses_t7_create")).toBeNull() // create binds nothing
+    } finally {
+      store.close()
+    }
+  })
+
+  test("operation create is additive: a second create leaves the first active", async () => {
+    await tool("operation").execute({ action: "create", name: "first", target: "one.test" }, { sessionID: "ses_a" })
+    await tool("operation").execute({ action: "create", name: "second", target: "two.test" }, { sessionID: "ses_a" })
+    const store = HopperStore.open(dir)
+    try {
+      const statuses = store.listOperations().map((o) => o.status)
+      expect(statuses).toEqual(["active", "active"])
+    } finally {
+      store.close()
+    }
+  })
+
+  test("operation status reports the session's bound operation, or the no-binding content", async () => {
+    const { bound } = bindThenCreateNewer("ses_t7_status")
+    const boundStatus = await tool("operation").execute({ action: "status" }, { sessionID: "ses_t7_status" })
+    expect(boundStatus.content).toContain("bound-one")
+    expect(boundStatus.content).not.toContain("newer-one") // bound op, not the newest active one
+    expect(boundStatus.content).toContain(bound.id)
+    const store = HopperStore.open(dir)
+    try {
+      store.setFree("ses_t7_status_free")
+    } finally {
+      store.close()
+    }
+    for (const context of [{ sessionID: "ses_t7_status_unbound" }, { sessionID: "ses_t7_status_free" }]) {
+      const res = await tool("operation").execute({ action: "status" }, context)
+      expect(res.content).toBe(NO_BINDING)
+    }
+  })
+
+  test("operation list keeps listing every operation (not session-scoped)", async () => {
+    bindThenCreateNewer("ses_t7_listops")
+    const res = await tool("operation").execute({ action: "list" }, { sessionID: "ses_t7_listops" })
+    expect(res.content).toContain("bound-one")
+    expect(res.content).toContain("newer-one")
+    const unbound = await tool("operation").execute({ action: "list" }, { sessionID: "ses_nobody" })
+    expect(unbound.content).toContain("bound-one")
+    expect(unbound.content).toContain("newer-one")
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Task 7: the mid-tool redirect confirm resolves by session binding —
+// bound ⇒ fence against the op's store scope row, free ⇒ pass, unbound ⇒
+// the binary confirm callback with the no-binding reason.
+// ---------------------------------------------------------------------------
+
+describe("http-request redirect confirm: resolved by session binding (Task 7)", () => {
+  let dir: string
+
+  beforeEach(() => {
+    dir = join(tmpdir(), "hopper-t7-redir-" + Date.now() + "-" + crypto.randomUUID().slice(0, 8))
+    mkdirSync(dir, { recursive: true })
+  })
+
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true })
+  })
+
+  const ok = (body: string | null, init?: ResponseInit) => new Response(body, init)
+  const hopTo = (loc: string) => {
+    let n = 0
+    return async () => {
+      n++
+      return n === 1 ? ok(null, { status: 302, headers: { location: loc } }) : ok("landed")
+    }
+  }
+
+  test("bound session: hops fence against the bound op's scope row (store, not scope.json)", async () => {
+    const store = HopperStore.open(dir)
+    try {
+      const op = store.createOperation("redir", "ok.test")
+      store.upsertBinding("ses_r", op.id)
+    } finally {
+      store.close()
+    }
+    const confirms: Array<[string[], string]> = []
+    const confirm = async (violations: string[], reason: string) => {
+      confirms.push([violations, reason])
+    }
+    // in-scope hop: silent pass
+    const inScope = await request(dir, { url: "https://ok.test/" }, {
+      fetch: hopTo("https://ok.test/final"),
+      confirm,
+      context: { sessionID: "ses_r" },
+    })
+    expect(inScope.body).toBe("landed")
+    expect(confirms).toHaveLength(0)
+    // out-of-scope hop: confirm against the op's scope row
+    const outOfScope = await request(dir, { url: "https://ok.test/" }, {
+      fetch: hopTo("https://evil.test/x"),
+      confirm,
+      context: { sessionID: "ses_r" },
+    })
+    expect(outOfScope.body).toBe("landed")
+    expect(confirms).toEqual([[["evil.test"], expect.stringContaining("outside the operation scope")]])
+  })
+
+  test("free session: redirect hops never confirm", async () => {
+    const store = HopperStore.open(dir)
+    try {
+      store.createOperation("free-op", "ok.test")
+      store.setFree("ses_r_free")
+    } finally {
+      store.close()
+    }
+    let confirmed = 0
+    const res = await request(dir, { url: "https://ok.test/" }, {
+      fetch: hopTo("https://evil.test/x"),
+      confirm: async () => {
+        confirmed++
+      },
+      context: { sessionID: "ses_r_free" },
+    })
+    expect(confirmed).toBe(0)
+    expect(res.body).toBe("landed")
+  })
+
+  test("unbound session: binary confirm with the no-binding reason (verbatim)", async () => {
+    const confirms: Array<[string[], string]> = []
+    const res = await request(dir, { url: "https://ok.test/" }, {
+      fetch: hopTo("https://evil.test/x"),
+      confirm: async (violations, reason) => {
+        confirms.push([violations, reason])
+      },
+      context: { sessionID: "ses_r_unbound" },
+    })
+    expect(res.body).toBe("landed")
+    expect(confirms).toEqual([[["evil.test"], "no operation bound — allow redirect to evil.test?"]])
+  })
+
+  test("no sessionID in the tool context behaves unbound (ask, never block)", async () => {
+    const confirms: Array<[string[], string]> = []
+    const res = await request(dir, { url: "https://ok.test/" }, {
+      fetch: hopTo("https://evil.test/x"),
+      confirm: async (violations, reason) => {
+        confirms.push([violations, reason])
+      },
+    })
+    expect(res.body).toBe("landed")
+    expect(confirms).toEqual([[["evil.test"], "no operation bound — allow redirect to evil.test?"]])
+  })
+
+  test("unreadable store degrades to unbound: the confirm is asked, nothing blocks", async () => {
+    writeFileSync(join(dir, "data"), "not a directory") // HopperStore.open cannot mkdir through a file
+    const confirms: Array<[string[], string]> = []
+    const res = await request(dir, { url: "https://ok.test/" }, {
+      fetch: hopTo("https://evil.test/x"),
+      confirm: async (violations, reason) => {
+        confirms.push([violations, reason])
+      },
+      context: { sessionID: "ses_r_broken" },
+    })
+    expect(res.body).toBe("landed")
+    expect(confirms).toEqual([[["evil.test"], "no operation bound — allow redirect to evil.test?"]])
   })
 })

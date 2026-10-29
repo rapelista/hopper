@@ -68,14 +68,15 @@ export function renderReportMarkdown(store: HopperStore, opId: string): string {
 export function writeReport(configDir: string, opId?: string): string {
   const store = HopperStore.open(configDir)
   try {
-    const id = opId ?? store.getActiveOperation()?.id
-    if (!id) throw new Error("no operation to report on")
-    const md = renderReportMarkdown(store, id)
-    const op = store.listOperations().find((o) => o.id === id)
+    // session-scoped era: the caller (report tool) resolves the session's
+    // bound operation — there is no implicit active-op pick left here
+    if (!opId) throw new Error("no operation to report on")
+    const md = renderReportMarkdown(store, opId)
+    const op = store.listOperations().find((o) => o.id === opId)
     const stamp = new Date().toISOString().slice(0, 10).replace(/-/g, "")
     const reportsDir = join(configDir, "..", "reports")
     mkdirSync(reportsDir, { recursive: true })
-    const path = join(reportsDir, `${id.slice(0, 8)}-${op?.name ?? "operation"}-${stamp}.md`)
+    const path = join(reportsDir, `${opId.slice(0, 8)}-${op?.name ?? "operation"}-${stamp}.md`)
     writeFileSync(path, md)
     return path
   } finally {

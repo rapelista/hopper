@@ -138,6 +138,11 @@ describe("hopper rpc handlers", () => {
       { name: "op", target: "b.test" },
       handlerCtx(),
     )
+    // Task 7: the finding tool defaults to the session's BOUND op — bind first
+    await (m.rpcHandlers.bind as (i: unknown, c: unknown) => Promise<any>)(
+      { sessionID: "ses_finding_tool", operationId: created.operation.id },
+      handlerCtx(),
+    )
     const finding = m.addedTools.find((t) => t.name === "finding")!
     await (finding.execute as (i: unknown, c: unknown) => Promise<unknown>)(
       {
@@ -146,14 +151,40 @@ describe("hopper rpc handlers", () => {
         severity: "high",
         target: "b.test",
       },
-      handlerCtx(),
+      { sessionID: "ses_finding_tool" },
     )
     expect(m.rpcEvents).toContainEqual({
       name: "finding.changed",
       data: { operationId: created.operation.id, findingId: expect.any(String), status: "candidate" },
     })
-    const list = await (m.rpcHandlers.findings as (i: unknown, c: unknown) => Promise<any>)({}, handlerCtx())
+    const list = await (m.rpcHandlers.findings as (i: unknown, c: unknown) => Promise<any>)(
+      { operationId: created.operation.id },
+      handlerCtx(),
+    )
     expect(list.items[0]).toMatchObject({ title: "XSS reflected", severity: "high", status: "candidate", target: "b.test" })
+  })
+
+  test("findings without operationId returns an empty ledger even with findings around (R7)", async () => {
+    const m = await setup()
+    const created = await (m.rpcHandlers.createOperation as (i: unknown, c: unknown) => Promise<any>)(
+      { name: "r7", target: "r7.test" },
+      handlerCtx(),
+    )
+    const store = HopperStore.open(configDir)
+    try {
+      store.addFinding(created.operation.id, { title: "r7 finding", severity: "low", target: "r7.test" })
+    } finally {
+      store.close()
+    }
+    // the singleton-era active-op fallback is gone: no operationId reads as empty
+    const bare = await (m.rpcHandlers.findings as (i: unknown, c: unknown) => Promise<any>)({}, handlerCtx())
+    expect(bare).toEqual({ items: [] })
+    const named = await (m.rpcHandlers.findings as (i: unknown, c: unknown) => Promise<any>)(
+      { operationId: created.operation.id },
+      handlerCtx(),
+    )
+    expect(named.items).toHaveLength(1)
+    expect(named.items[0]).toMatchObject({ title: "r7 finding" })
   })
 })
 
@@ -298,6 +329,8 @@ describe("hopper rpc handlers: binding model (spec §6)", () => {
     }
     expect(binding).toBeNull()
     expect(m.rpcEvents).toContainEqual({ name: "binding.changed", data: { sessionID: "ses_del" } })
+    // carry-along (Task 6 minor): the TUI ops list refreshes on operation.changed — a deletion reports the null id
+    expect(m.rpcEvents).toContainEqual({ name: "operation.changed", data: { operationId: null } })
     const no = await handler(m, "deleteOperation")({ operationId: "op_nope" }, handlerCtx())
     expect(no.type).toBe("no_operation")
   })
@@ -370,6 +403,10 @@ describe("hopper rpc handlers: binding model (spec §6)", () => {
       // controller ruling: never write a NULL-op bound row — the type-safe refusal keeps the ask pending
       const bad = await handler(m, "guardAnswer")({ askId, choice: "bind" }, handlerCtx())
       expect(bad).toEqual({ accepted: false })
+      expect(gateRef!.pending()).toEqual([askId])
+      // carry-along (Task 6 minor): a bind naming a NONEXISTENT operation is refused the same way
+      const ghost = await handler(m, "guardAnswer")({ askId, choice: "bind", operationId: "op_ghost" }, handlerCtx())
+      expect(ghost).toEqual({ accepted: false })
       expect(gateRef!.pending()).toEqual([askId])
       const ok = await handler(m, "guardAnswer")({ askId, choice: "deny" }, handlerCtx())
       expect(ok).toEqual({ accepted: true })

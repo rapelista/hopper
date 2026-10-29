@@ -246,19 +246,6 @@ export class HopperStore {
     return op
   }
 
-  /**
-   * @deprecated singleton-era read. Callers left: the `findings` RPC handler's
-   * optional-operationId fallback and tools.ts/report.ts (Task 7 reworks those
-   * onto the binding API); delete this with the last of them.
-   * Returns the most recently updated active operation, if any.
-   */
-  getActiveOperation(): Operation | null {
-    const row = this.db.query("SELECT * FROM operations WHERE status = 'active' ORDER BY updated_at DESC LIMIT 1").get() as
-      | Record<string, unknown>
-      | null
-    return row ? rowToOperation(row) : null
-  }
-
   // -- session bindings -----------------------------------------------------
 
   /** Bind a session to an operation (mode `bound`). Upsert by session. */

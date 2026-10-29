@@ -82,7 +82,8 @@ describe("http-request dialog-always behavior", () => {
       },
       context: { sessionID: "s1", messageID: "m1", id: "c1" },
     })
-    expect(calls).toEqual([[["scanme.nmap.org"], expect.stringContaining("redirect hop")]])
+    // session "s1" has no binding ⇒ unbound: the binary confirm with the no-binding reason
+    expect(calls).toEqual([[["scanme.nmap.org"], "no operation bound — allow redirect to scanme.nmap.org?"]])
     expect(res.body).toBe("landed")
     await expect(
       request(configDir, { url: "https://a.example.test/" }, {
@@ -154,7 +155,7 @@ describe("corrupt scope.json (RF#1 - never hard-block)", () => {
     rmSync(corruptDir, { recursive: true, force: true })
   })
 
-  test("redirect hop dialogs with the no-scope reason and proceeds on allow - never ScopeError", async () => {
+  test("redirect hop dialogs with the no-binding reason and proceeds on allow - never ScopeError", async () => {
     const confirms: Array<[string[], string]> = []
     let n = 0
     const res = await request(corruptDir, { url: "https://a.example.test/" }, {
@@ -166,7 +167,8 @@ describe("corrupt scope.json (RF#1 - never hard-block)", () => {
         confirms.push([v, r])
       },
     })
-    expect(confirms).toEqual([[["b.test"], expect.stringContaining("no active operation scope")]])
+    // the corrupt scope.json relic is not read anymore: no binding ⇒ unbound confirm
+    expect(confirms).toEqual([[["b.test"], "no operation bound — allow redirect to b.test?"]])
     expect(res.body).toBe("landed")
   })
 
