@@ -9,7 +9,9 @@ import type { HopperRpcClient } from "./status"
  * Guiding line: "The TUI is the ledger." Tab bar + list; left/right cycle,
  * 1–6 jump, click a tab to switch. The keymap layer is created inside the
  * component, so it lives and dies with the panel and only fires while the
- * panel owns input (diff-viewer idiom).
+ * panel owns input (diff-viewer idiom). The kernel is session-bound: the
+ * panel resolves through the slot input's sessionID — the bound operation's
+ * findings, or the "no active operation" fallback when unbound or free.
  */
 
 export interface PanelModel {
@@ -32,7 +34,7 @@ export function buildPanelModel(status: OperationStatusResult | null, findings: 
 }
 
 export interface PanelCtx {
-  ui: { slot: (spec: { append: string; render: (input: { name?: string; toggleFullscreen?: () => void }) => unknown }) => () => void }
+  ui: { slot: (spec: { append: string; render: (input: { name?: string; sessionID?: string; toggleFullscreen?: () => void }) => unknown }) => () => void }
   client: { rpc: (def: unknown) => HopperRpcClient & { findings: (input: { operationId?: string }, options?: { location?: unknown }) => Promise<{ items: FindingSummary[] }> } }
   keymap?: { layer: (layer: unknown) => () => void }
   theme?: HopperTheme
@@ -43,26 +45,51 @@ export function registerPanel(ctx: PanelCtx): { cleanup: () => void; model: () =
   const rpc = ctx.client.rpc(Hopper)
   const opts = () => (ctx.location === undefined ? {} : { location: ctx.location })
   const [model, setModel] = createSignal<PanelModel>(buildPanelModel(null, []))
+  // the session whose panel is on screen — the ledger resolves through it
+  // (banner idiom: re-key clears, the reply that crossed the switch never lands)
+  const [renderedSession, setRenderedSession] = createSignal<string | undefined>(undefined)
 
   const refresh = async () => {
+    const sessionID = renderedSession()
+    if (sessionID === undefined) return // nothing on screen resolves without a session
     try {
-      const [status, findings] = await Promise.all([rpc.operationStatus({}, opts()), rpc.findings({}, opts())])
+      const status = await rpc.operationStatus({ sessionID }, opts())
+      if (sessionID !== renderedSession()) return // a reply that crossed a session switch never lands
+      if (status.operation === null) {
+        // unbound or free — the null-operation model keeps the fallback copy
+        setModel(buildPanelModel(status, []))
+        return
+      }
+      const findings = await rpc.findings({ operationId: status.operation.id }, opts())
+      if (sessionID !== renderedSession()) return
       setModel(buildPanelModel(status, findings.items))
     } catch (err) {
       console.error("[hopper-tui] panel refresh failed:", err)
     }
   }
-  void refresh()
 
   const stops = [
     rpc.events.on("operation.changed", () => void refresh()),
     rpc.events.on("finding.changed", () => void refresh()),
+    rpc.events.on("binding.changed", (event) => {
+      const data = event.data as { sessionID?: string } | undefined
+      // only the rendered session's rebinding swaps the ledger — other sessions rebind silently
+      if (typeof data?.sessionID === "string" && data.sessionID === renderedSession()) void refresh()
+    }),
     ctx.ui.slot({
       append: "session.panel",
-      render: (panel: { name?: string; toggleFullscreen?: () => void }) =>
-        panel.name === "hopper.ledger" ? (
-          <LedgerPanel ctx={ctx} model={model} toggleFullscreen={panel.toggleFullscreen} />
-        ) : null,
+      render: (panel: { name?: string; sessionID?: string; toggleFullscreen?: () => void }) => {
+        if (panel.name !== "hopper.ledger") return null
+        const sessionID = panel.sessionID
+        if (sessionID !== renderedSession()) {
+          setRenderedSession(sessionID)
+          // drop the previous session's ledger immediately — stale display is a
+          // cross-session leak too, and a failed fetch must not pin it permanently
+          setModel(buildPanelModel(null, []))
+          if (sessionID !== undefined) void refresh()
+        }
+        return <LedgerPanel ctx={ctx} model={model} toggleFullscreen={panel.toggleFullscreen} />
+      },
     }),
   ]
 

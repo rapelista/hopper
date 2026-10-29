@@ -1,12 +1,13 @@
 import { describe, expect, test } from "bun:test"
 import { testRender } from "@opentui/solid"
 import { registerStatus } from "../src/tui/status"
-import { buildPanelModel } from "../src/tui/panel"
+import { buildPanelModel, registerPanel } from "../src/tui/panel"
 import { parsePwnArgument, buildKickoffPrompt, registerCommands } from "../src/tui/commands"
 import { registerNotifications } from "../src/tui/notifications"
 import { currentSession } from "../src/tui/current-session"
+import { registerGuardDialog } from "../src/tui"
 import { LIFECYCLE, cycleStatus } from "../src/tui/format"
-import type { FindingSummary, OperationListItem, OperationStatusResult } from "../src/rpc"
+import type { FindingSummary, GuardAskData, OperationListItem, OperationStatusResult } from "../src/rpc"
 
 const status: OperationStatusResult = {
   operation: { id: "op1", name: "juice", target: "localhost", createdAt: "2026-10-29T00:00:00Z" },
@@ -131,9 +132,9 @@ function statusCtx(listItems: OperationListItem[] = opsList, failStatusFor: stri
  * one) — testRender gives us the headless opentui renderer, a text frame, and
  * the built element tree (for mouse-handler assertions).
  */
-const renderSlot = async (
-  slot: { render: (input?: { sessionID?: string }) => unknown },
-  input?: { sessionID?: string },
+const renderSlot = async <I,>(
+  slot: { render: (input?: I) => unknown },
+  input?: I,
   visit?: (tree: unknown) => void,
 ) => {
   let tree: unknown
@@ -357,6 +358,164 @@ describe("cycleStatus (panel tab cycling)", () => {
   test("unknown status falls back to a sane neighbor", () => {
     const all: string[] = [...LIFECYCLE]
     expect(all).toContain(cycleStatus("nonsense", 1))
+  })
+})
+
+describe("panel (per session)", () => {
+  interface PanelSlotInput {
+    name?: string
+    sessionID?: string
+    toggleFullscreen?: () => void
+  }
+
+  // rpc mock keyed by sessionID (statusCtx idiom): s1 bound to op1 (juice),
+  // s2 unbound; findings keyed by operationId
+  function panelCtx() {
+    const finding = (id: string, st: string, target: string): FindingSummary =>
+      ({ id, title: `t-${id}`, severity: "high", status: st, target, createdAt: "x" })
+    const findingsByOp: Record<string, FindingSummary[]> = {
+      op1: [finding("fa", "candidate", "localhost"), finding("fb", "verified", "localhost")],
+      op2: [finding("fc", "observed", "example.test")],
+    }
+    let statusFetches = 0
+    let findingsFetches = 0
+    const statusInputs: Array<{ sessionID?: string }> = []
+    const findingsInputs: Array<{ operationId?: string }> = []
+    const eventSubs: Record<string, Array<(e: { data: unknown }) => void>> = {}
+    const slots: Array<{ append: string; render: (input?: PanelSlotInput) => unknown }> = []
+    const ctx = {
+      theme: {
+        text: { base: "#e6e6e6", muted: "#888888", feedback: { error: { base: "#ff0000" } } },
+      },
+      ui: {
+        slot: (spec: { append: string; render: (input?: PanelSlotInput) => unknown }) => {
+          slots.push(spec)
+          return () => {}
+        },
+      },
+      client: {
+        rpc: () => ({
+          operationStatus: async (input: { sessionID?: string } = {}) => {
+            statusFetches++
+            statusInputs.push(input)
+            return input.sessionID === "s2" ? unbound : status
+          },
+          findings: async (input: { operationId?: string } = {}) => {
+            findingsFetches++
+            findingsInputs.push(input)
+            return { items: input.operationId === undefined ? [] : (findingsByOp[input.operationId] ?? []) }
+          },
+          events: {
+            on: (name: string, cb: (e: { data: unknown }) => void) => {
+              ;(eventSubs[name] ??= []).push(cb)
+              return () => {
+                eventSubs[name] = (eventSubs[name] ?? []).filter((x) => x !== cb)
+              }
+            },
+          },
+        }),
+      },
+      keymap: { layer: (cb: () => unknown) => { cb(); return () => {} } },
+    }
+    return {
+      ctx,
+      slots,
+      eventSubs,
+      statusInputs,
+      findingsInputs,
+      get statusFetches() { return statusFetches },
+      get findingsFetches() { return findingsFetches },
+    }
+  }
+
+  test("renders the session's bound operation findings — findings fetched by operationId", async () => {
+    const p = panelCtx()
+    const reg = registerPanel(p.ctx as never)
+    const slot = p.slots[0]!
+    await renderSlot(slot, { name: "hopper.ledger", sessionID: "s1" })
+    await settle()
+    expect(p.statusInputs).toEqual([{ sessionID: "s1" }])
+    expect(p.findingsInputs).toEqual([{ operationId: "op1" }])
+    const frame = await renderSlot(slot, { name: "hopper.ledger", sessionID: "s1" })
+    expect(frame).toContain("t-fa") // the bound op's finding, on the default candidate tab
+    expect(frame).not.toContain("t-fc") // op2's finding never bleeds in
+    reg.cleanup()
+  })
+
+  test("unbound session: the fallback copy, and no findings fetch", async () => {
+    const p = panelCtx()
+    const reg = registerPanel(p.ctx as never)
+    const slot = p.slots[0]!
+    await renderSlot(slot, { name: "hopper.ledger", sessionID: "s2" })
+    await settle()
+    expect(p.statusInputs).toEqual([{ sessionID: "s2" }])
+    expect(p.findingsFetches).toBe(0)
+    const frame = await renderSlot(slot, { name: "hopper.ledger", sessionID: "s2" })
+    expect(frame).toContain("no active operation — start one with /pwn")
+    reg.cleanup()
+  })
+
+  test("no session rendered: fallback copy, no fetch; another panel's slot render is a no-op", async () => {
+    const p = panelCtx()
+    const reg = registerPanel(p.ctx as never)
+    await settle()
+    expect(p.statusFetches).toBe(0) // nothing resolves without a session
+    const frame = await renderSlot(p.slots[0]!, { name: "hopper.ledger" })
+    expect(frame).toContain("no active operation — start one with /pwn")
+    expect(p.statusFetches).toBe(0)
+    const foreign = await renderSlot(p.slots[0]!, { name: "other.panel", sessionID: "s1" })
+    expect(foreign).not.toContain("Ledger") // a foreign panel render is a null no-op
+    expect(foreign).not.toContain("no active operation")
+    expect(p.statusFetches).toBe(0) // a foreign panel never keys our fetches
+    reg.cleanup()
+  })
+
+  test("re-keying to another session clears the previous session's ledger immediately", async () => {
+    const p = panelCtx()
+    const reg = registerPanel(p.ctx as never)
+    const slot = p.slots[0]!
+    await renderSlot(slot, { name: "hopper.ledger", sessionID: "s1" })
+    await settle()
+    const bound = await renderSlot(slot, { name: "hopper.ledger", sessionID: "s1" })
+    expect(bound).toContain("t-fa")
+    // switch to s2 — its fetch is in flight, but s1's findings must already be gone
+    const pending = await renderSlot(slot, { name: "hopper.ledger", sessionID: "s2" })
+    expect(pending).not.toContain("t-fa") // stale display is a cross-session leak too
+    expect(pending).toContain("no active operation — start one with /pwn")
+    await settle()
+    expect(p.statusInputs).toEqual([{ sessionID: "s1" }, { sessionID: "s2" }])
+    reg.cleanup()
+  })
+
+  test("binding.changed refetches only the panel's session; operation/finding events refetch; cleanup unwires", async () => {
+    const p = panelCtx()
+    const reg = registerPanel(p.ctx as never)
+    const slot = p.slots[0]!
+    await renderSlot(slot, { name: "hopper.ledger", sessionID: "s1" })
+    await settle()
+    expect(p.statusFetches).toBe(1)
+    // another session's rebinding is not ours to show
+    p.eventSubs["binding.changed"]![0]!({ data: { sessionID: "s9" } })
+    await settle()
+    expect(p.statusFetches).toBe(1)
+    // our session rebinding (bind or unbind) refetches it
+    p.eventSubs["binding.changed"]![0]!({ data: { sessionID: "s1" } })
+    await settle()
+    expect(p.statusFetches).toBe(2)
+    expect(p.statusInputs[1]).toEqual({ sessionID: "s1" })
+    p.eventSubs["operation.changed"]![0]!({ data: { operationId: "op1" } })
+    await settle()
+    expect(p.statusFetches).toBe(3)
+    p.eventSubs["finding.changed"]![0]!({ data: { operationId: "op1", findingId: "fa", status: "observed" } })
+    await settle()
+    expect(p.statusFetches).toBe(4)
+    reg.cleanup()
+    for (const name of ["operation.changed", "finding.changed", "binding.changed"]) {
+      expect(p.eventSubs[name]?.length ?? 0).toBe(0)
+    }
+    const before = p.statusFetches
+    await settle()
+    expect(p.statusFetches).toBe(before)
   })
 })
 
@@ -733,6 +892,167 @@ describe("commands module (registration)", () => {
     resolved.selects[0]!.resolve("op2")
     await settle()
     expect(resolved.toasts.some((t) => (t as { variant?: string }).variant === "error" && JSON.stringify(t).includes("not active"))).toBe(true)
+  })
+})
+
+// ----------------------------------------------------------- guard.ask ----
+
+describe("guard.ask dialog", () => {
+  interface GuardSelectSpec {
+    title: string
+    options: Array<{ value: string; title: string }>
+  }
+  type GuardAnswer = { askId: string; choice: string; operationId?: string }
+
+  function guardCtx(listItems: OperationListItem[] = opsAll) {
+    let listFetches = 0
+    const selects: Array<{ spec: GuardSelectSpec; resolve: (value: unknown) => void }> = []
+    const answers: GuardAnswer[] = []
+    const subs: Record<string, Array<(e: { data: unknown }) => void>> = {}
+    const ctx = {
+      ui: {
+        dialog: {
+          // deferred like the real one: the dialog stays open until the test resolves it
+          select: (i: GuardSelectSpec) => {
+            return new Promise<unknown>((resolve) => selects.push({ spec: i, resolve }))
+          },
+        },
+      },
+      client: {
+        rpc: () => ({
+          operationsList: async () => {
+            listFetches++
+            return { items: listItems }
+          },
+          guardAnswer: async (input: GuardAnswer) => {
+            answers.push(input)
+            return { accepted: true }
+          },
+          events: {
+            on: (name: string, cb: (e: { data: unknown }) => void) => {
+              ;(subs[name] ??= []).push(cb)
+              return () => {
+                subs[name] = (subs[name] ?? []).filter((x) => x !== cb)
+              }
+            },
+          },
+        }),
+      },
+    }
+    return { ctx, selects, answers, subs, get listFetches() { return listFetches } }
+  }
+
+  const ask = (sessionID = "s1"): GuardAskData => ({
+    askId: "ask1",
+    sessionID,
+    messageID: "m1",
+    tool: "websearch",
+    targets: ["example.test"],
+    reason: "websearch is a scoped weapon and this session has no bound operation",
+  })
+  const fire = (g: ReturnType<typeof guardCtx>, data: GuardAskData) =>
+    g.subs["guard.ask"]![0]!({ data })
+
+  const OPTION_TITLES = ["Free this session until closed", "Allow once", "Deny"]
+
+  test("ask for the current session: select titled with the reason; bind names the first active op; bind answers with operationId", async () => {
+    currentSession.reset()
+    currentSession.set("s1")
+    const g = guardCtx()
+    const reg = registerGuardDialog(g.ctx as never)
+    expect(g.listFetches).toBe(0) // lazy — operationsList is not fetched at setup
+    fire(g, ask())
+    await settle()
+    expect(g.listFetches).toBe(1) // fetched when the ask arrived
+    expect(g.selects).toHaveLength(1)
+    expect(g.selects[0]!.spec.title).toBe("websearch is a scoped weapon and this session has no bound operation")
+    expect(g.selects[0]!.spec.options.map((o) => o.title)).toEqual(["Bind: juice · localhost", ...OPTION_TITLES])
+    g.selects[0]!.resolve("bind")
+    await settle()
+    expect(g.answers).toEqual([{ askId: "ask1", choice: "bind", operationId: "op1" }])
+    reg.cleanup()
+  })
+
+  test("ask for another session: no dialog, no answer, no fetch — the server timeout covers it", async () => {
+    currentSession.reset()
+    currentSession.set("s1")
+    const g = guardCtx()
+    const reg = registerGuardDialog(g.ctx as never)
+    fire(g, ask("s9"))
+    await settle()
+    expect(g.selects).toHaveLength(0)
+    expect(g.answers).toHaveLength(0)
+    expect(g.listFetches).toBe(0)
+    reg.cleanup()
+  })
+
+  test("no active operations: the bind option is omitted; free answers without operationId", async () => {
+    currentSession.reset()
+    currentSession.set("s1")
+    const g = guardCtx([opsAll[2]!]) // only the completed ghost
+    const reg = registerGuardDialog(g.ctx as never)
+    fire(g, ask())
+    await settle()
+    expect(g.selects[0]!.spec.options.map((o) => o.title)).toEqual(OPTION_TITLES)
+    g.selects[0]!.resolve("free")
+    await settle()
+    expect(g.answers).toEqual([{ askId: "ask1", choice: "free" }])
+    reg.cleanup()
+  })
+
+  test("allow-once maps to its choice", async () => {
+    currentSession.reset()
+    currentSession.set("s1")
+    const g = guardCtx()
+    const reg = registerGuardDialog(g.ctx as never)
+    fire(g, ask())
+    await settle()
+    g.selects[0]!.resolve("allow-once")
+    await settle()
+    expect(g.answers).toEqual([{ askId: "ask1", choice: "allow-once" }])
+    reg.cleanup()
+  })
+
+  test("a dismissed select (esc) answers deny — dismissal is a decision, not a hang until timeout", async () => {
+    currentSession.reset()
+    currentSession.set("s1")
+    const g = guardCtx()
+    const reg = registerGuardDialog(g.ctx as never)
+    fire(g, ask())
+    await settle()
+    g.selects[0]!.resolve(undefined)
+    await settle()
+    expect(g.answers).toEqual([{ askId: "ask1", choice: "deny" }])
+    reg.cleanup()
+  })
+
+  test("a long reason truncates to a sane title", async () => {
+    currentSession.reset()
+    currentSession.set("s1")
+    const g = guardCtx()
+    const reg = registerGuardDialog(g.ctx as never)
+    const long = { ...ask(), reason: "r".repeat(200) }
+    fire(g, long)
+    await settle()
+    const title = g.selects[0]!.spec.title
+    expect(title.length).toBeLessThanOrEqual(80)
+    expect(title.endsWith("…")).toBe(true)
+    reg.cleanup()
+  })
+
+  test("cleanup unwires the listener", async () => {
+    currentSession.reset()
+    currentSession.set("s1")
+    const g = guardCtx()
+    const reg = registerGuardDialog(g.ctx as never)
+    fire(g, ask())
+    await settle()
+    expect(g.selects).toHaveLength(1) // it was live
+    reg.cleanup()
+    // the event bus can no longer reach us — nothing left to deliver to
+    expect(g.subs["guard.ask"]?.length ?? 0).toBe(0)
+    await settle()
+    expect(g.answers).toHaveLength(0)
   })
 })
 
