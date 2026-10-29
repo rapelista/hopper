@@ -1,9 +1,11 @@
-import { describe, expect, test, beforeAll, afterAll } from "bun:test"
+import { describe, expect, test, beforeAll, afterAll, afterEach } from "bun:test"
 import { mkdirSync, rmSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { tmpdir } from "node:os"
-import hopperPlugin, { bashScopeGuard, buildTools } from "../src/index"
+import hopperPlugin, { bashScopeGuard, buildTools, setUnboundGateFactory } from "../src/index"
 import type { Scope } from "../src/lib/scope"
+import { HopperStore } from "../src/lib/store"
+import { createUnboundGate, type GuardAsk, type UnboundGate } from "../src/lib/unbound-gate"
 import { makeMockCtx } from "./helpers"
 
 const scope = (targets: string[]): Scope => ({ targets, strict: true, created: "x" })
@@ -131,6 +133,44 @@ function writeScopeFixure(strict: boolean) {
   )
 }
 
+/** Create an operation (target normalized, strict scope row) and bind sessionID to it. */
+function bindSession(sessionID: string, target = "example.test"): { id: string; name: string; target: string } {
+  const store = HopperStore.open(configDir)
+  try {
+    const op = store.createOperation("op-" + sessionID, target)
+    store.upsertBinding(sessionID, op.id)
+    return { id: op.id, name: op.name, target: op.target }
+  } finally {
+    store.close()
+  }
+}
+
+/**
+ * Gate injection: replace setup's gate with one the test controls — capturing
+ * emits (and forwarding them through the production rpc `guard.ask` emitter),
+ * optionally auto-answering, with a test timeout and captured timeout logs.
+ */
+function injectGate(opts: { timeoutMs?: number; answer?: (ask: GuardAsk, gate: UnboundGate) => void } = {}) {
+  const emitted: GuardAsk[] = []
+  const logs: string[] = []
+  let created: UnboundGate | undefined
+  setUnboundGateFactory((forwardAsk) => {
+    created = createUnboundGate({
+      ...(opts.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : {}),
+      emit: (ask) => {
+        emitted.push(ask)
+        forwardAsk(ask)
+        opts.answer?.(ask, created!)
+      },
+      log: (...args: unknown[]) => {
+        logs.push(args.map(String).join(" "))
+      },
+    })
+    return created
+  })
+  return { emitted, logs, gate: () => created! }
+}
+
 const EXPECTED_TOOLS = [
   "doctor",
   "http-request",
@@ -244,8 +284,8 @@ describe("hopper v2 plugin", () => {
     expect(p.text).not.toContain("$ARGUMENTS")
   })
 
-  test("strict shell out-of-scope resolves through the dialog instead of blocking", async () => {
-    writeScopeFixure(true)
+  test("bound session: out-of-scope shell resolves through the dialog instead of blocking", async () => {
+    bindSession(EVENT_BASE.sessionID)
     const asserts: unknown[] = []
     const { ctx, toolHooks } = makeMockCtx(tmpProject, { assert: async (i: unknown) => { asserts.push(i) } })
     await (hopperPlugin as { setup: (ctx: unknown) => Promise<unknown> }).setup(ctx)
@@ -262,8 +302,8 @@ describe("hopper v2 plugin", () => {
     if (!res.ok) expect(res.violations).toContain("scanme.nmap.org")
   })
 
-  test("non-strict: violation triggers the allow/deny dialog and proceeds on allow", async () => {
-    writeScopeFixure(false)
+  test("bound session: violation triggers the allow/deny dialog and proceeds on allow", async () => {
+    bindSession(EVENT_BASE.sessionID)
     const asserts: unknown[] = []
     const { ctx, toolHooks } = makeMockCtx(tmpProject, {
       assert: async (input: unknown) => {
@@ -280,11 +320,11 @@ describe("hopper v2 plugin", () => {
     expect(a.action).toBe("scope-escape")
     expect(a.resources).toEqual(["scanme.nmap.org"])
     expect(a.save).toEqual(["scanme.nmap.org"])
-    expect(a.metadata).toMatchObject({ reason: expect.stringContaining("scanme.nmap.org") })
+    expect(a.metadata).toMatchObject({ reason: expect.stringContaining("outside the operation scope") })
   })
 
-  test("non-strict: dialog denial rejects the call", async () => {
-    writeScopeFixure(false)
+  test("bound session: dialog denial rejects the call", async () => {
+    bindSession(EVENT_BASE.sessionID)
     const { ctx, toolHooks } = makeMockCtx(tmpProject, {
       assert: async () => {
         throw new Error("denied by operator")
@@ -297,8 +337,8 @@ describe("hopper v2 plugin", () => {
     ).rejects.toThrow(/denied by operator/)
   })
 
-  test("strict: operator denial still rejects (the deny is the only block left)", async () => {
-    writeScopeFixure(true)
+  test("bound session (store scope rows are strict): operator denial still rejects (the deny is the only block left)", async () => {
+    bindSession(EVENT_BASE.sessionID)
     const { ctx, toolHooks } = makeMockCtx(tmpProject, {
       assert: async () => {
         throw new Error("denied by operator")
@@ -311,8 +351,8 @@ describe("hopper v2 plugin", () => {
     )
   })
 
-  test("no dialog api: warn and proceed (fail-open)", async () => {
-    writeScopeFixure(false)
+  test("bound session without dialog api: warn and proceed (fail-open)", async () => {
+    bindSession(EVENT_BASE.sessionID)
     const warnings: string[] = []
     const origWarn = console.warn
     console.warn = (...args: unknown[]) => {
@@ -329,21 +369,19 @@ describe("hopper v2 plugin", () => {
     expect(warnings.join(" ")).toContain("scanme.nmap.org")
   })
 
-  test("webfetch out-of-scope and no-scope both dialog", async () => {
-    writeScopeFixure(false)
+  test("bound session: out-of-scope webfetch raises the same dialog", async () => {
+    bindSession(EVENT_BASE.sessionID)
     const asserts: unknown[] = []
     const { ctx, toolHooks } = makeMockCtx(tmpProject, { assert: async (i: unknown) => { asserts.push(i) } })
     await (hopperPlugin as { setup: (ctx: unknown) => Promise<unknown> }).setup(ctx)
     const hook = toolHooks["execute.before"]! as (event: unknown) => Promise<void>
     await hook({ ...EVENT_BASE, tool: "webfetch", input: { url: "https://evil.test/x" } })
-    rmSync(join(configDir, "scope.json"))
-    await hook({ ...EVENT_BASE, tool: "webfetch", input: { url: "https://a.test/x" } })
-    expect(asserts.length).toBe(2)
-    expect((asserts[1] as { metadata: { reason: string } }).metadata.reason).toContain("no active operation scope")
+    expect(asserts.length).toBe(1)
+    expect((asserts[0] as { metadata: { reason: string } }).metadata.reason).toContain("outside the operation scope")
   })
 
-  test("http-request url and scanner target/extras route through the same dialog", async () => {
-    writeScopeFixure(false)
+  test("bound session: http-request url and scanner target/extras route through the same dialog", async () => {
+    bindSession(EVENT_BASE.sessionID)
     const asserts: unknown[] = []
     const { ctx, toolHooks } = makeMockCtx(tmpProject, { assert: async (i: unknown) => { asserts.push(i) } })
     await (hopperPlugin as { setup: (ctx: unknown) => Promise<unknown> }).setup(ctx)
@@ -365,33 +403,21 @@ describe("hopper v2 plugin", () => {
     expect(asserts.length).toBe(0)
   })
 
-  test("corrupt scope.json: shell passes, webfetch dialogs (RF#1)", async () => {
-    writeFileSync(join(configDir, "scope.json"), "{corrupt")
-    const asserts: unknown[] = []
-    const { ctx, toolHooks } = makeMockCtx(tmpProject, { assert: async (i: unknown) => { asserts.push(i) } })
-    await (hopperPlugin as { setup: (ctx: unknown) => Promise<unknown> }).setup(ctx)
-    const hook = toolHooks["execute.before"]! as (event: unknown) => Promise<void>
-    await hook({ ...EVENT_BASE, tool: "shell", input: { command: "nmap scanme.nmap.org" } })
-    await hook({ ...EVENT_BASE, tool: "webfetch", input: { url: "https://a.test/" } })
-    expect(asserts.length).toBe(1)
-  })
-
-  test("leak-advisory host enriches the dialog reason in BOTH postures - strict stays inert (opsec decision B)", async () => {
-    writeScopeFixure(false)
+  test("leak-advisory host enriches the bound-dialog reason (opsec stays advisory, never blocks)", async () => {
+    bindSession(EVENT_BASE.sessionID)
     const asserts: unknown[] = []
     const { ctx, toolHooks } = makeMockCtx(tmpProject, { assert: async (i: unknown) => { asserts.push(i) } })
     await (hopperPlugin as { setup: (ctx: unknown) => Promise<unknown> }).setup(ctx)
     const hook = toolHooks["execute.before"]! as (event: unknown) => Promise<void>
     await hook({ ...EVENT_BASE, tool: "webfetch", input: { url: "https://api.shodan.io/" } })
-    writeScopeFixure(true)
     await hook({ ...EVENT_BASE, tool: "webfetch", input: { url: "https://crt.sh/?q=x" } })
-    expect(asserts.length).toBe(2) // strict posture still dialogs - never blocks
+    expect(asserts.length).toBe(2) // advisory hosts still dialog - never block
     expect((asserts[0] as { metadata: { reason: string } }).metadata.reason).toContain("opsec advisory")
     expect((asserts[1] as { metadata: { reason: string } }).metadata.reason).toContain("leak the target identity")
   })
 
-  test("assert input carries resources and save for always-allow (RF#5)", async () => {
-    writeScopeFixure(false)
+  test("bound dialog input carries resources and save for always-allow (RF#5)", async () => {
+    bindSession(EVENT_BASE.sessionID)
     const asserts: unknown[] = []
     const { ctx, toolHooks } = makeMockCtx(tmpProject, { assert: async (i: unknown) => { asserts.push(i) } })
     await (hopperPlugin as { setup: (ctx: unknown) => Promise<unknown> }).setup(ctx)
@@ -430,17 +456,219 @@ describe("hopper v2 plugin", () => {
     expect(a.resources).toEqual(["scanme.nmap.org"])
   })
 
-  test("session context hook pushes the operation block", async () => {
-    writeFileSync(
-      join(configDir, "scope.json"),
-      JSON.stringify({ targets: ["example.test"], strict: true, created: "x" }),
-    )
+  test("session context hook pushes the bound operation's block per session", async () => {
+    const opA = bindSession("ses_ctx_a", "alpha.test")
+    const opB = bindSession("ses_ctx_b", "beta.test") // seeded later: the legacy global-active pick would return this one
+    const store = HopperStore.open(configDir)
+    let finding: { id: string } | null = null
+    try {
+      finding = store.addFinding(opA.id, { title: "t", severity: "low", target: "alpha.test" })
+    } finally {
+      store.close()
+    }
     const { ctx, sessionHooks } = makeMockCtx(tmpProject)
     await (hopperPlugin as { setup: (ctx: unknown) => Promise<unknown> }).setup(ctx)
-    const hook = sessionHooks["context"]! as (event: { system: Array<{ type: string; text: string }> }) => Promise<void>
-    const event = { system: [] as Array<{ type: string; text: string }> }
-    await hook(event)
-    // no active operation → no block pushed, but must not throw
-    expect(Array.isArray(event.system)).toBe(true)
+    const hook = sessionHooks["context"]! as (event: { sessionID: string; system: Array<{ type: string; text: string }> }) => Promise<void>
+    const eventA = { sessionID: "ses_ctx_a", system: [] as Array<{ type: string; text: string }> }
+    await hook(eventA)
+    expect(eventA.system.length).toBe(1)
+    expect(eventA.system[0]!.type).toBe("text")
+    expect(eventA.system[0]!.text).toContain("## Hopper Operation Context")
+    expect(eventA.system[0]!.text).toContain(opA.name)
+    expect(eventA.system[0]!.text).toContain("alpha.test")
+    expect(eventA.system[0]!.text).not.toContain("beta.test") // per-session, not the latest active op
+    expect(eventA.system[0]!.text).toContain("Findings ledger: 1 candidate")
+    void finding
+    void opB
+  })
+
+  test("session context hook pushes nothing for free and unbound sessions", async () => {
+    bindSession("ses_ctx_c", "gamma.test")
+    const store = HopperStore.open(configDir)
+    try {
+      store.setFree("ses_ctx_free")
+    } finally {
+      store.close()
+    }
+    const { ctx, sessionHooks } = makeMockCtx(tmpProject)
+    await (hopperPlugin as { setup: (ctx: unknown) => Promise<unknown> }).setup(ctx)
+    const hook = sessionHooks["context"]! as (event: { sessionID: string; system: Array<{ type: string; text: string }> }) => Promise<void>
+    const freeEvent = { sessionID: "ses_ctx_free", system: [] as Array<{ type: string; text: string }> }
+    const unboundEvent = { sessionID: "ses_ctx_unbound", system: [] as Array<{ type: string; text: string }> }
+    await hook(freeEvent)
+    await hook(unboundEvent)
+    expect(freeEvent.system).toEqual([])
+    expect(unboundEvent.system).toEqual([]) // an active op exists — must NOT leak into unbound sessions
+  })
+})
+
+describe("guard: free and unbound sessions (binding resolution + gate)", () => {
+  afterEach(() => {
+    setUnboundGateFactory(null)
+  })
+
+  test("free session: no fence at all — same out-of-scope call raises nothing", async () => {
+    const store = HopperStore.open(configDir)
+    try {
+      store.setFree("ses_free1")
+    } finally {
+      store.close()
+    }
+    const gate = injectGate()
+    const asserts: unknown[] = []
+    const { ctx, toolHooks } = makeMockCtx(tmpProject, { assert: async (i: unknown) => { asserts.push(i) } })
+    await (hopperPlugin as { setup: (ctx: unknown) => Promise<unknown> }).setup(ctx)
+    const hook = toolHooks["execute.before"]! as (event: unknown) => Promise<void>
+    await expect(hook({ ...EVENT_BASE, sessionID: "ses_free1", tool: "webfetch", input: { url: "https://evil.test/x" } })).resolves.toBeUndefined()
+    expect(asserts.length).toBe(0)
+    expect(gate.emitted.length).toBe(0)
+  })
+
+  test("unbound session without weapon targets passes silently", async () => {
+    const gate = injectGate()
+    const asserts: unknown[] = []
+    const { ctx, toolHooks } = makeMockCtx(tmpProject, { assert: async (i: unknown) => { asserts.push(i) } })
+    await (hopperPlugin as { setup: (ctx: unknown) => Promise<unknown> }).setup(ctx)
+    const hook = toolHooks["execute.before"]! as (event: unknown) => Promise<void>
+    await expect(hook({ ...EVENT_BASE, sessionID: "ses_unb_silent", tool: "shell", input: { command: "curl http://localhost:3000/" } })).resolves.toBeUndefined()
+    expect(asserts.length).toBe(0)
+    expect(gate.emitted.length).toBe(0)
+  })
+
+  test("unbound session with a weapon target: ask emitted with the right fields, forwarder fires, allow-once proceeds", async () => {
+    const gate = injectGate({ answer: (ask, g) => g.answer(ask.askId, "allow-once") })
+    const asserts: unknown[] = []
+    const { ctx, toolHooks, rpcEvents } = makeMockCtx(tmpProject, { assert: async (i: unknown) => { asserts.push(i) } })
+    await (hopperPlugin as { setup: (ctx: unknown) => Promise<unknown> }).setup(ctx)
+    const hook = toolHooks["execute.before"]! as (event: unknown) => Promise<void>
+    const event = { ...EVENT_BASE, sessionID: "ses_unb_ask", messageID: "msg_unb", tool: "webfetch", input: { url: "https://evil.test/x" } }
+    await expect(hook(event)).resolves.toBeUndefined()
+    expect(asserts.length).toBe(0) // the native dialog is not used for unbound sessions
+    expect(gate.emitted.length).toBe(1)
+    const ask = gate.emitted[0]!
+    expect(ask.askId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/) // minted by the gate
+    expect(ask.sessionID).toBe("ses_unb_ask")
+    expect(ask.messageID).toBe("msg_unb")
+    expect(ask.tool).toBe("webfetch")
+    expect(ask.targets).toEqual(["evil.test"])
+    expect(ask.reason).toContain("no active operation scope")
+    expect(ask.reason).toContain("evil.test")
+    // the production forwarder relayed the ask onto the rpc event bus
+    const rpcAsk = rpcEvents.find((e) => e.name === "guard.ask")
+    expect(rpcAsk).toBeDefined()
+    expect((rpcAsk!.data as { askId: string }).askId).toBe(ask.askId)
+  })
+
+  test("answered bind: binding row written and the triggering call proceeds; fence applies from the next call", async () => {
+    const op = bindSession("ses_seed_only", "example.test") // creates the op without binding the asking session
+    const store = HopperStore.open(configDir)
+    try {
+      store.clearBinding("ses_seed_only")
+    } finally {
+      store.close()
+    }
+    const gate = injectGate({ answer: (ask, g) => g.answer(ask.askId, "bind", op.id) })
+    const asserts: unknown[] = []
+    const { ctx, toolHooks } = makeMockCtx(tmpProject, { assert: async (i: unknown) => { asserts.push(i) } })
+    await (hopperPlugin as { setup: (ctx: unknown) => Promise<unknown> }).setup(ctx)
+    const hook = toolHooks["execute.before"]! as (event: unknown) => Promise<void>
+    await expect(
+      hook({ ...EVENT_BASE, sessionID: "ses_unb_bind", tool: "webfetch", input: { url: "https://evil.test/x" } }),
+    ).resolves.toBeUndefined() // the triggering call proceeds — the operator just eyeballed the target
+    expect(gate.emitted.length).toBe(1)
+    expect(asserts.length).toBe(0)
+    const store2 = HopperStore.open(configDir)
+    let binding: { operation_id: string | null; mode: string } | null = null
+    try {
+      binding = store2.getBinding("ses_unb_bind")
+    } finally {
+      store2.close()
+    }
+    expect(binding).toEqual({ operation_id: op.id, mode: "bound" })
+    // bound now: in-scope target passes silently (no second ask)
+    await expect(
+      hook({ ...EVENT_BASE, sessionID: "ses_unb_bind", tool: "webfetch", input: { url: "https://example.test/x" } }),
+    ).resolves.toBeUndefined()
+    expect(gate.emitted.length).toBe(1)
+    expect(asserts.length).toBe(0)
+  })
+
+  test("answered free: session marked free and the call proceeds", async () => {
+    const gate = injectGate({ answer: (ask, g) => g.answer(ask.askId, "free") })
+    const { ctx, toolHooks } = makeMockCtx(tmpProject)
+    await (hopperPlugin as { setup: (ctx: unknown) => Promise<unknown> }).setup(ctx)
+    const hook = toolHooks["execute.before"]! as (event: unknown) => Promise<void>
+    await expect(
+      hook({ ...EVENT_BASE, sessionID: "ses_unb_free", tool: "webfetch", input: { url: "https://evil.test/x" } }),
+    ).resolves.toBeUndefined()
+    const store = HopperStore.open(configDir)
+    let binding: { operation_id: string | null; mode: string } | null = null
+    try {
+      binding = store.getBinding("ses_unb_free")
+    } finally {
+      store.close()
+    }
+    expect(binding).toEqual({ operation_id: null, mode: "free" })
+  })
+
+  test("answered deny: the hook rejects with the operator-denied error", async () => {
+    const gate = injectGate({ answer: (ask, g) => g.answer(ask.askId, "deny") })
+    const { ctx, toolHooks } = makeMockCtx(tmpProject)
+    await (hopperPlugin as { setup: (ctx: unknown) => Promise<unknown> }).setup(ctx)
+    const hook = toolHooks["execute.before"]! as (event: unknown) => Promise<void>
+    await expect(
+      hook({ ...EVENT_BASE, sessionID: "ses_unb_deny", tool: "webfetch", input: { url: "https://evil.test/x" } }),
+    ).rejects.toThrow("[hopper] operator denied:")
+    expect(gate.emitted.length).toBe(1)
+  })
+
+  test("unanswered ask (timeoutMs 10): fails open, proceeds with the warn log", async () => {
+    const gate = injectGate({ timeoutMs: 10 })
+    const asserts: unknown[] = []
+    const { ctx, toolHooks } = makeMockCtx(tmpProject, { assert: async (i: unknown) => { asserts.push(i) } })
+    await (hopperPlugin as { setup: (ctx: unknown) => Promise<unknown> }).setup(ctx)
+    const hook = toolHooks["execute.before"]! as (event: unknown) => Promise<void>
+    await expect(
+      hook({ ...EVENT_BASE, sessionID: "ses_unb_timeout", tool: "webfetch", input: { url: "https://evil.test/x" } }),
+    ).resolves.toBeUndefined()
+    expect(asserts.length).toBe(0)
+    expect(gate.emitted.length).toBe(1)
+    expect(gate.logs.join(" ")).toContain("[hopper] guard.ask timed out, proceeding:")
+  })
+
+  test("unreadable store (configDir on an unwritable path): unbound path, no crash (RF#2/#3)", async () => {
+    const brokenProject = join(tmpdir(), "hopper-kernel-broken-" + Date.now())
+    rmSync(brokenProject, { recursive: true, force: true })
+    mkdirSync(brokenProject, { recursive: true })
+    writeFileSync(join(brokenProject, ".opencode"), "not a directory") // HopperStore.open cannot mkdir through a file
+    try {
+      const gate = injectGate({ answer: (ask, g) => g.answer(ask.askId, "allow-once") })
+      const asserts: unknown[] = []
+      const { ctx, toolHooks, sessionHooks } = makeMockCtx(brokenProject, { assert: async (i: unknown) => { asserts.push(i) } })
+      await (hopperPlugin as { setup: (ctx: unknown) => Promise<unknown> }).setup(ctx)
+      const hook = toolHooks["execute.before"]! as (event: unknown) => Promise<void>
+      await expect(
+        hook({ ...EVENT_BASE, sessionID: "ses_broken", tool: "webfetch", input: { url: "https://evil.test/x" } }),
+      ).resolves.toBeUndefined() // degraded to unbound → gate dialog → allow-once → proceeds
+      expect(gate.emitted.length).toBe(1)
+      expect((gate.emitted[0] as { reason: string }).reason).toContain("no active operation scope")
+      expect(asserts.length).toBe(0)
+      const contextHook = sessionHooks["context"]! as (event: { sessionID: string; system: Array<{ type: string; text: string }> }) => Promise<void>
+      const ctxEvent = { sessionID: "ses_broken", system: [] as Array<{ type: string; text: string }> }
+      const errors: string[] = []
+      const origError = console.error
+      console.error = (...args: unknown[]) => {
+        errors.push(args.map(String).join(" "))
+      }
+      try {
+        await expect(contextHook(ctxEvent)).resolves.toBeUndefined()
+      } finally {
+        console.error = origError
+      }
+      expect(ctxEvent.system).toEqual([])
+      expect(errors.join(" ")).toContain("context hook error") // degraded via the catch, not a lucky pass
+    } finally {
+      rmSync(brokenProject, { recursive: true, force: true })
+    }
   })
 })

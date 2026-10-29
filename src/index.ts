@@ -3,8 +3,9 @@ import { existsSync, readdirSync, readFileSync } from "node:fs"
 import { join } from "node:path"
 import { bashScopeGuard } from "./lib/guard"
 import { buildTools, type ConfirmScopeEscape } from "./lib/tools"
-import { loadScope, saveScope, normalizeTarget, scopeViolations, OPSEC_ADVISORY_HOSTS } from "./lib/scope"
-import { HopperStore } from "./lib/store"
+import { loadScope, saveScope, normalizeTarget, scopeViolations, OPSEC_ADVISORY_HOSTS, type Scope } from "./lib/scope"
+import { HopperStore, type SessionResolution } from "./lib/store"
+import { createUnboundGate, type GuardAsk, type UnboundGate } from "./lib/unbound-gate"
 import { Hopper, type HopperNotify } from "./rpc"
 
 export { bashScopeGuard } from "./lib/guard"
@@ -181,25 +182,53 @@ interface SystemBlock {
 }
 
 interface ContextEvent {
+  sessionID: string
   system: SystemBlock[]
 }
 
 /** v2 renamed the bash tool to "shell" — guard both names. */
 const SHELL_TOOLS = new Set(["shell", "bash"])
 
-function operationContextBlock(configDir: string): string | null {
+// ---------------------------------------------------------------------------
+// unbound-session gate — one instance per setup; the guard asks through it,
+// the guardAnswer RPC (Task 6) answers through it.
+// ---------------------------------------------------------------------------
+
+/** Builds the plugin's unbound gate; receives the production ask forwarder (the rpc `guard.ask` emitter). */
+export type UnboundGateFactory = (emit: (ask: GuardAsk) => void) => UnboundGate
+
+const defaultGateFactory: UnboundGateFactory = (emit) => createUnboundGate({ emit, log: console.warn })
+
+let unboundGateFactory: UnboundGateFactory = defaultGateFactory
+
+/**
+ * Embedding/testing seam: replace how setup builds its unbound gate (e.g. a
+ * small fail-open timeout or a capturing emit). Pass null to restore the
+ * production gate.
+ */
+export function setUnboundGateFactory(factory: UnboundGateFactory | null): void {
+  unboundGateFactory = factory ?? defaultGateFactory
+}
+
+/**
+ * Operation context block for a session's BOUND operation (spec §5): same
+ * content shape as the active-operation era, fed from the resolved operation
+ * and its scope/store rows. Free/unbound sessions (and any store error) push
+ * nothing.
+ */
+function operationContextBlock(configDir: string, sessionID: string): string | null {
   const store = HopperStore.open(configDir)
   try {
-    const op = store.getActiveOperation()
-    if (!op) return null
-    const findings = store.listFindings(op.id)
+    const resolution = store.resolveSession(sessionID)
+    if (resolution.mode !== "bound") return null
+    const findings = store.listFindings(resolution.operation.id)
     const counts = new Map<string, number>()
     for (const f of findings) counts.set(f.status, (counts.get(f.status) ?? 0) + 1)
     const summary = [...counts.entries()].map(([status, n]) => `${n} ${status}`).join(", ") || "none yet"
     return [
       "## Hopper Operation Context",
       "",
-      `- Active operation: ${op.name} (target: ${op.target}, started ${op.created_at})`,
+      `- Active operation: ${resolution.operation.name} (target: ${resolution.operation.target}, started ${resolution.operation.created_at})`,
       `- Findings ledger: ${summary}`,
       "- Preserve the operation target boundary and the findings lifecycle (candidate → observed → verified → reportable).",
     ].join("\n")
@@ -217,6 +246,13 @@ export default Plugin.define({
 
     // Operator dialog API (defensive: absent in some hosts → tools fail-open).
     const permissionAssert = (ctx as { permission?: { assert?: (input: unknown) => Promise<void> } }).permission?.assert
+
+    // Unbound-session gate (spec §4): ONE instance for the plugin lifetime —
+    // the guard asks through it and the guardAnswer RPC (Task 6) answers
+    // through it. The ask forwarder is late-bound: rpcReg exists only after
+    // registration below, and no ask can happen before the hooks exist.
+    let forwardAsk: (ask: GuardAsk) => void = () => {}
+    const gate = unboundGateFactory((ask) => forwardAsk(ask))
 
     // 0. RPC surface: operation/findings/opsec state for the TUI part and any client.
     const rpcReg = await ctx.rpc.register(Hopper, {
@@ -317,6 +353,11 @@ export default Plugin.define({
         throw new Error("[hopper] not implemented until Task 6")
       },
     })
+    // The gate's asks ride the rpc event bus to the operator (TUI); a missing
+    // listener simply times out fail-open inside the gate.
+    forwardAsk = (ask) => {
+      void rpcReg.events.emit("guard.ask", { ...ask }).catch(() => {})
+    }
     const notify: HopperNotify = (event) => {
       if (event.type === "operation.changed") void rpcReg.events.emit("operation.changed", { ...event.data }).catch(() => {})
       else void rpcReg.events.emit("finding.changed", { ...event.data }).catch(() => {})
@@ -406,18 +447,36 @@ export default Plugin.define({
       })
     }
 
-    // 2. runtime guard — dialog-always: every scope escape (shell, webfetch,
-    //    http-request, scanner target/extras) raises the operator dialog and
-    //    nothing else. A dialog deny is the only rejection path; with no dialog
-    //    API we warn and proceed (fail-open). `strict` changes nothing here —
-    //    opsec is advisory (operator decision B).
+    // 2. runtime guard — per-session binding resolution (spec §3): bound ⇒
+    //    dialog-always fence against the bound operation's store scope (a
+    //    dialog deny is the only rejection; no dialog API ⇒ warn and proceed);
+    //    free ⇒ no fence at all; unbound ⇒ rich guard.ask dialog through the
+    //    gate (fail-open timeout), never a silent weapon pass. `strict`
+    //    changes nothing here — opsec is advisory (operator decision B).
     await ctx.tool.hook("execute.before", async (event: ToolBeforeEvent) => {
-      let scope: ReturnType<typeof loadScope> = null
+      let resolution: SessionResolution = { mode: "unbound" }
       try {
-        scope = loadScope(configDir)
+        const store = HopperStore.open(configDir)
+        try {
+          resolution = store.resolveSession(event.sessionID)
+        } finally {
+          store.close()
+        }
       } catch {
-        scope = null // unreadable scope behaves like no scope: dialogs, never blocks
+        resolution = { mode: "unbound" } // unreadable store behaves like unbound: dialogs, never blocks
       }
+      if (resolution.mode === "free") return
+
+      // The bound operation's scope row is the fence; unbound sessions fence
+      // against nothing (every extracted target is a violation ⇒ dialog).
+      const scope: Scope | null =
+        resolution.mode === "bound"
+          ? {
+              targets: resolution.scope.targets,
+              strict: resolution.scope.strict,
+              created: resolution.operation.created_at,
+            }
+          : null
 
       const violations: string[] = []
       let inputFile = ""
@@ -489,6 +548,56 @@ export default Plugin.define({
       }
       const reason = parts.join("; ")
 
+      if (resolution.mode === "unbound") {
+        // Rich unbound dialog (spec §4): rpc-correlated ask with a fail-open
+        // timeout. Deny is the only refusal; every other choice proceeds.
+        const answer = await gate.decide({
+          askId: "",
+          sessionID: event.sessionID,
+          messageID: event.messageID,
+          tool: event.tool,
+          targets: violations.length > 0 ? violations : [inputFile],
+          reason,
+        })
+        if (answer.choice === "deny") throw new Error("[hopper] operator denied: " + reason)
+        if (answer.choice === "free") {
+          try {
+            const store = HopperStore.open(configDir)
+            try {
+              store.setFree(event.sessionID)
+            } finally {
+              store.close()
+            }
+          } catch (err) {
+            // the operator allowed the call — a failed free-write must not block it
+            console.warn("[hopper-kernel] could not persist free mode, proceeding:", err)
+          }
+          return
+        }
+        if (answer.choice === "bind") {
+          if (answer.operationId === undefined) {
+            // bind without an operation to bind to is a client bug — proceed
+            // unbound rather than writing a corrupt binding row
+            console.warn("[hopper-kernel] bind answer without operationId, proceeding unbound")
+            return
+          }
+          try {
+            const store = HopperStore.open(configDir)
+            try {
+              store.upsertBinding(event.sessionID, answer.operationId)
+            } finally {
+              store.close()
+            }
+          } catch (err) {
+            // the operator eyeballed the target and allowed it — a failed
+            // binding write must not block the already-approved call
+            console.warn("[hopper-kernel] could not persist binding, proceeding:", err)
+          }
+          return // the triggering call proceeds; the fence applies from the next one
+        }
+        return // allow-once: proceed, write nothing
+      }
+
       if (typeof permissionAssert !== "function") {
         console.warn("[hopper-kernel] scope escape without dialog api, proceeding:", reason)
         return
@@ -506,10 +615,11 @@ export default Plugin.define({
       })
     })
 
-    // 3. operation context on every agent-loop model call (system block)
+    // 3. operation context on every agent-loop model call (system block) —
+    //    per session: only a bound operation gets a block (spec §5).
     await ctx.session.hook("context", async (event: ContextEvent) => {
       try {
-        const block = operationContextBlock(configDir)
+        const block = operationContextBlock(configDir, event.sessionID)
         if (block) event.system.push({ type: "text", text: block })
       } catch (err) {
         console.error("[hopper-kernel] context hook error:", err)
