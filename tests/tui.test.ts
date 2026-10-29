@@ -1,11 +1,12 @@
 import { describe, expect, test } from "bun:test"
+import { testRender } from "@opentui/solid"
 import { registerStatus } from "../src/tui/status"
 import { buildPanelModel } from "../src/tui/panel"
 import { parsePwnArgument, buildKickoffPrompt, registerCommands } from "../src/tui/commands"
 import { registerNotifications } from "../src/tui/notifications"
 import { currentSession } from "../src/tui/current-session"
 import { LIFECYCLE, cycleStatus } from "../src/tui/format"
-import type { FindingSummary, OperationStatusResult } from "../src/rpc"
+import type { FindingSummary, OperationListItem, OperationStatusResult } from "../src/rpc"
 
 const status: OperationStatusResult = {
   operation: { id: "op1", name: "juice", target: "localhost", createdAt: "2026-10-29T00:00:00Z" },
@@ -13,27 +14,65 @@ const status: OperationStatusResult = {
   findings: { candidate: 2, observed: 0, verified: 1, reportable: 0, rejected: 0, stale: 0 },
 }
 
+const unbound: OperationStatusResult = {
+  operation: null,
+  opsec: "normal",
+  findings: { candidate: 0, observed: 0, verified: 0, reportable: 0, rejected: 0, stale: 0 },
+}
+
+const opItem = (id: string, name: string, target: string, findings: OperationListItem["findings"]): OperationListItem => ({
+  id,
+  name,
+  target,
+  createdAt: "x",
+  status: "active",
+  findings,
+})
+
+// 2 ops · 5 findings across them — the home footer's cross-op summary source
+const opsList: OperationListItem[] = [
+  opItem("op1", "juice", "localhost", status.findings),
+  opItem("op2", "shop", "example.test", { candidate: 0, observed: 2, verified: 0, reportable: 0, rejected: 0, stale: 0 }),
+]
+
 const settle = () => new Promise((r) => setTimeout(r, 5))
 
 // ---------------------------------------------------------------- status ----
 
-function statusCtx() {
-  let fetches = 0
+function statusCtx(listItems: OperationListItem[] = opsList) {
+  let statusFetches = 0
+  let listFetches = 0
+  let picks = 0
+  const statusInputs: Array<{ sessionID?: string }> = []
   const eventSubs: Record<string, Array<(e: { data: unknown }) => void>> = {}
-  const slots: Array<{ append: string; render: () => unknown }> = []
+  const slots: Array<{ append: string; render: (input?: { sessionID?: string }) => unknown }> = []
   const storeKeys: string[] = []
   const ctx = {
+    // minimal real-shape theme so rendered frames resolve actual colors
+    theme: {
+      text: { base: "#e6e6e6", muted: "#888888", feedback: { error: { base: "#ff0000" } } },
+    },
+    // Task 9 wires the real picker; until then clicks are recorded no-ops
+    pickOperation: () => {
+      picks++
+    },
     ui: {
-      slot: (spec: { append: string; render: () => unknown }) => {
+      slot: (spec: { append: string; render: (input?: { sessionID?: string }) => unknown }) => {
         slots.push(spec)
         return () => {}
       },
     },
     client: {
       rpc: () => ({
-        operationStatus: async () => {
-          fetches++
-          return status
+        // session-keyed: s1 is bound to juice, s2 is unbound
+        operationStatus: async (input: { sessionID?: string } = {}) => {
+          statusFetches++
+          statusInputs.push(input)
+          return input.sessionID === "s2" ? unbound : status
+        },
+        operationsList: async () => {
+          listFetches++
+          return { items: listItems }
         },
         events: {
           on: (name: string, cb: (e: { data: unknown }) => void) => {
@@ -67,41 +106,179 @@ function statusCtx() {
       },
     },
   }
-  return { ctx, get fetches() { return fetches }, eventSubs, slots, storeKeys }
+  return {
+    ctx,
+    get statusFetches() { return statusFetches },
+    get listFetches() { return listFetches },
+    get picks() { return picks },
+    statusInputs,
+    eventSubs,
+    slots,
+    storeKeys,
+  }
 }
 
+/**
+ * Slot renders must happen inside a renderer (intrinsic elements throw without
+ * one) — testRender gives us the headless opentui renderer, a text frame, and
+ * the built element tree (for mouse-handler assertions).
+ */
+const renderSlot = async (
+  slot: { render: (input?: { sessionID?: string }) => unknown },
+  input?: { sessionID?: string },
+  visit?: (tree: unknown) => void,
+) => {
+  let tree: unknown
+  const setup = await testRender(() => {
+    tree = slot.render(input)
+    return tree as never
+  })
+  await setup.flush()
+  const frame = setup.captureCharFrame()
+  visit?.(tree)
+  await setup.dispose()
+  return frame
+}
+
+const sidebarOf = (s: ReturnType<typeof statusCtx>) => s.slots.find((x) => x.append === "sidebar.content")!
+
 describe("status module", () => {
-  test("fetches once on register, exposes status, registers both footer slots", async () => {
+  test("registers both slots; the footer fetches operationsList on register, the sidebar waits for a session", async () => {
     const s = statusCtx()
     const reg = registerStatus(s.ctx as never)
     await settle()
-    expect(s.fetches).toBe(1)
-    expect(reg.status()?.operation?.name).toBe("juice")
     expect(s.slots.map((x) => x.append).sort()).toEqual(["home.footer.status", "sidebar.content"])
+    expect(s.listFetches).toBe(1)
+    // per-session resolution: no global operationStatus fetch before a session renders
+    expect(s.statusFetches).toBe(0)
     // host-storage branch runs: the collapse state asks for its persisted key
     expect(s.storeKeys).toContain("ledgerView")
     reg.cleanup()
   })
 
-  test("operation/finding events refetch; cleanup stops the wiring", async () => {
+  test("sidebar resolves through the slot-input sessionID: bound session renders the operation block", async () => {
+    const s = statusCtx()
+    const reg = registerStatus(s.ctx as never)
+    const sidebar = sidebarOf(s)
+    await renderSlot(sidebar, { sessionID: "s1" }) // first render fires the keyed fetch
+    await settle()
+    expect(s.statusInputs).toEqual([{ sessionID: "s1" }])
+    const frame = await renderSlot(sidebar, { sessionID: "s1" }) // same session — no extra fetch
+    expect(s.statusFetches).toBe(1)
+    expect(frame).toContain("juice")
+    expect(frame).toContain("localhost")
+    expect(frame).toContain("strict")
+    reg.cleanup()
+  })
+
+  test("unbound or sessionless renders the muted /op hint, never another session's operation", async () => {
+    const s = statusCtx()
+    const reg = registerStatus(s.ctx as never)
+    const sidebar = sidebarOf(s)
+    await renderSlot(sidebar, { sessionID: "s2" }) // s2 is unbound
+    await settle()
+    expect(s.statusInputs).toEqual([{ sessionID: "s2" }])
+    const unboundFrame = await renderSlot(sidebar, { sessionID: "s2" })
+    expect(unboundFrame).toContain("hop · no operation — /op to bind")
+    expect(unboundFrame).not.toContain("juice") // no cross-session leak
+    // no sessionID at all (home): the same hint, and still no fetch
+    const sessionless = await renderSlot(sidebar)
+    expect(sessionless).toContain("hop · no operation — /op to bind")
+    expect(s.statusFetches).toBe(1)
+    reg.cleanup()
+  })
+
+  test("home footer summarizes every operation; none ⇒ the empty marker", async () => {
     const s = statusCtx()
     const reg = registerStatus(s.ctx as never)
     await settle()
-    expect(s.fetches).toBe(1)
+    const footer = s.slots.find((x) => x.append === "home.footer.status")!
+    const frame = await renderSlot(footer)
+    expect(frame).toContain("hop · 2 ops · 5 findings")
+    reg.cleanup()
+
+    const empty = statusCtx([])
+    const reg2 = registerStatus(empty.ctx as never)
+    await settle()
+    const frame2 = await renderSlot(empty.slots.find((x) => x.append === "home.footer.status")!)
+    expect(frame2).toContain("hop · no operations")
+    reg2.cleanup()
+  })
+
+  test("binding.changed refetches the rendered session only; a session change refetches keyed", async () => {
+    const s = statusCtx()
+    const reg = registerStatus(s.ctx as never)
+    const sidebar = sidebarOf(s)
+    await renderSlot(sidebar, { sessionID: "s1" })
+    await settle()
+    expect(s.statusFetches).toBe(1)
+    // another session's rebinding is not ours to show
+    s.eventSubs["binding.changed"]![0]!({ data: { sessionID: "s9" } })
+    await settle()
+    expect(s.statusFetches).toBe(1)
+    // our session rebinding (bind or unbind) refetches it
+    s.eventSubs["binding.changed"]![0]!({ data: { sessionID: "s1" } })
+    await settle()
+    expect(s.statusFetches).toBe(2)
+    expect(s.statusInputs[1]).toEqual({ sessionID: "s1" })
+    // the sidebar following the operator to another session refetches keyed
+    await renderSlot(sidebar, { sessionID: "s2" })
+    expect(s.statusFetches).toBe(3)
+    expect(s.statusInputs[2]).toEqual({ sessionID: "s2" })
+    reg.cleanup()
+  })
+
+  test("operation/finding events refetch both surfaces; execution backstops the sidebar; cleanup unwires all", async () => {
+    const s = statusCtx()
+    const reg = registerStatus(s.ctx as never)
+    const sidebar = sidebarOf(s)
+    await renderSlot(sidebar, { sessionID: "s1" })
+    await settle()
+    expect(s.statusFetches).toBe(1)
+    expect(s.listFetches).toBe(1)
     s.eventSubs["operation.changed"]![0]!({ data: { operationId: "op1" } })
     await settle()
-    expect(s.fetches).toBe(2)
+    expect(s.statusFetches).toBe(2)
+    expect(s.listFetches).toBe(2)
     s.eventSubs["finding.changed"]![0]!({ data: {} })
     await settle()
-    expect(s.fetches).toBe(3)
+    expect(s.statusFetches).toBe(3)
+    expect(s.listFetches).toBe(3)
+    // backstop: a finished agent turn may have mutated the store through tools
+    s.eventSubs["session.execution.succeeded"]![0]!({ data: { sessionID: "s1" } })
+    await settle()
+    expect(s.statusFetches).toBe(4)
+    expect(s.listFetches).toBe(3) // the footer rides the kernel events, not the backstop
     reg.cleanup()
     // every listener unregistered — the event bus can no longer reach us
-    expect(s.eventSubs["operation.changed"]?.length ?? 0).toBe(0)
-    expect(s.eventSubs["finding.changed"]?.length ?? 0).toBe(0)
-    expect(s.eventSubs["session.execution.succeeded"]?.length ?? 0).toBe(0)
-    const before = s.fetches
+    for (const name of ["operation.changed", "finding.changed", "binding.changed", "session.execution.succeeded"]) {
+      expect(s.eventSubs[name]?.length ?? 0).toBe(0)
+    }
+    const before = s.statusFetches
     await settle()
-    expect(s.fetches).toBe(before)
+    expect(s.statusFetches).toBe(before)
+  })
+
+  test("operation rows click through to pickOperation (onMouseDown idiom)", async () => {
+    const s = statusCtx()
+    const reg = registerStatus(s.ctx as never)
+    const sidebar = sidebarOf(s)
+    await renderSlot(sidebar, { sessionID: "s1" })
+    await settle()
+    const handlers: Array<() => void> = []
+    await renderSlot(sidebar, { sessionID: "s1" }, (tree) => {
+      ;(function walk(node: unknown) {
+        const n = node as { _mouseListeners?: Record<string, unknown>; getChildren?: () => unknown[] } | undefined
+        const down = n?._mouseListeners?.down
+        if (typeof down === "function") handlers.push(down as () => void)
+        for (const child of n?.getChildren?.() ?? []) walk(child)
+      })(tree)
+    })
+    // header/name/target rows + ledger rows carry pick; the ledger header keeps its collapse toggle
+    expect(handlers.length).toBeGreaterThan(1)
+    for (const handler of handlers) handler()
+    expect(s.picks).toBeGreaterThan(0)
+    reg.cleanup()
   })
 })
 
