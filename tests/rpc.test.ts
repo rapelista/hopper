@@ -1,5 +1,5 @@
 import { describe, expect, test, beforeAll, afterAll } from "bun:test"
-import { mkdirSync, rmSync, readFileSync, writeFileSync } from "node:fs"
+import { mkdirSync, rmSync, writeFileSync, existsSync } from "node:fs"
 import { join } from "node:path"
 import { tmpdir } from "node:os"
 import hopperPlugin from "../src/index"
@@ -80,7 +80,7 @@ describe("hopper rpc handlers", () => {
     expect(res.findings).toEqual({ candidate: 0, observed: 0, verified: 0, reportable: 0, rejected: 0, stale: 0 })
   })
 
-  test("createOperation normalizes the target, writes scope, emits operation.changed", async () => {
+  test("createOperation normalizes the target, leaves scope.json to the store, emits operation.changed", async () => {
     const m = await setup()
     const res = await (m.rpcHandlers.createOperation as (i: unknown, c: unknown) => Promise<any>)(
       { name: "juice", target: "localhost:3000" },
@@ -88,21 +88,21 @@ describe("hopper rpc handlers", () => {
     )
     expect(res.operation.name).toBe("juice")
     expect(res.operation.target).toBe("localhost")
-    const scope = JSON.parse(readFileSync(join(configDir, "scope.json"), "utf8"))
-    expect(scope.targets).toEqual(["localhost"])
+    // additive create: the handler no longer writes scope.json — the store seeds the scopes row
+    expect(existsSync(join(configDir, "scope.json"))).toBe(false)
     expect(m.rpcEvents).toContainEqual({ name: "operation.changed", data: { operationId: res.operation.id } })
   })
 
-  test("setOpsec flips strict and emits; no scope file → no_operation error", async () => {
-    rmSync(join(configDir, "scope.json"))
+  test("setOpsec: no scope file → no_operation even after a create (create no longer writes scope)", async () => {
+    rmSync(join(configDir, "scope.json"), { force: true })
     const m = await setup()
     const no = await (m.rpcHandlers.setOpsec as (i: unknown, c: unknown) => Promise<any>)({ level: "strict" }, handlerCtx())
     expect(no.type).toBe("no_operation")
     await (m.rpcHandlers.createOperation as (i: unknown, c: unknown) => Promise<any>)({ name: "a", target: "a.test" }, handlerCtx())
     const res = await (m.rpcHandlers.setOpsec as (i: unknown, c: unknown) => Promise<any>)({ level: "normal" }, handlerCtx())
-    expect(res.opsec).toBe("normal")
-    expect(JSON.parse(readFileSync(join(configDir, "scope.json"), "utf8")).strict).toBe(false)
-    expect(m.rpcEvents.some((e) => e.name === "operation.changed")).toBe(true)
+    // file-based setOpsec stub until Task 6: with no scope file there is nothing to adjust
+    expect(res.type).toBe("no_operation")
+    expect(existsSync(join(configDir, "scope.json"))).toBe(false)
   })
 
   test("corrupt scope.json: operationStatus stays normal, setOpsec → no_operation (RF#1)", async () => {
