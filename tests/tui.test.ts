@@ -39,7 +39,7 @@ const settle = () => new Promise((r) => setTimeout(r, 5))
 
 // ---------------------------------------------------------------- status ----
 
-function statusCtx(listItems: OperationListItem[] = opsList) {
+function statusCtx(listItems: OperationListItem[] = opsList, failStatusFor: string[] = []) {
   let statusFetches = 0
   let listFetches = 0
   let picks = 0
@@ -64,10 +64,11 @@ function statusCtx(listItems: OperationListItem[] = opsList) {
     },
     client: {
       rpc: () => ({
-        // session-keyed: s1 is bound to juice, s2 is unbound
+        // session-keyed: s1 is bound to juice, s2 is unbound; failStatusFor sessions reject
         operationStatus: async (input: { sessionID?: string } = {}) => {
           statusFetches++
           statusInputs.push(input)
+          if (input.sessionID !== undefined && failStatusFor.includes(input.sessionID)) throw new Error("rpc down")
           return input.sessionID === "s2" ? unbound : status
         },
         operationsList: async () => {
@@ -175,16 +176,39 @@ describe("status module", () => {
     const s = statusCtx()
     const reg = registerStatus(s.ctx as never)
     const sidebar = sidebarOf(s)
-    await renderSlot(sidebar, { sessionID: "s2" }) // s2 is unbound
+    await renderSlot(sidebar, { sessionID: "s1" })
     await settle()
-    expect(s.statusInputs).toEqual([{ sessionID: "s2" }])
+    const boundFrame = await renderSlot(sidebar, { sessionID: "s1" })
+    expect(boundFrame).toContain("juice")
+    // switch to s2 — its fetch is in flight, but s1's banner must already be gone
+    const pendingFrame = await renderSlot(sidebar, { sessionID: "s2" })
+    expect(pendingFrame).not.toContain("juice") // stale display is a cross-session leak too
+    expect(pendingFrame).toContain("hop · no operation — /op to bind")
+    await settle()
+    expect(s.statusInputs).toEqual([{ sessionID: "s1" }, { sessionID: "s2" }])
     const unboundFrame = await renderSlot(sidebar, { sessionID: "s2" })
     expect(unboundFrame).toContain("hop · no operation — /op to bind")
     expect(unboundFrame).not.toContain("juice") // no cross-session leak
     // no sessionID at all (home): the same hint, and still no fetch
     const sessionless = await renderSlot(sidebar)
     expect(sessionless).toContain("hop · no operation — /op to bind")
-    expect(s.statusFetches).toBe(1)
+    expect(s.statusFetches).toBe(2)
+    reg.cleanup()
+  })
+
+  test("a failed fetch after a session switch leaves the hint — the previous session's block never returns", async () => {
+    const s = statusCtx(opsList, ["s2"]) // s2's operationStatus rejects
+    const reg = registerStatus(s.ctx as never)
+    const sidebar = sidebarOf(s)
+    await renderSlot(sidebar, { sessionID: "s1" })
+    await settle()
+    const boundFrame = await renderSlot(sidebar, { sessionID: "s1" })
+    expect(boundFrame).toContain("juice")
+    await renderSlot(sidebar, { sessionID: "s2" }) // re-key, then its fetch rejects
+    await settle()
+    const failedFrame = await renderSlot(sidebar, { sessionID: "s2" })
+    expect(failedFrame).not.toContain("juice") // the catch kept the cleared state, not s1's
+    expect(failedFrame).toContain("hop · no operation — /op to bind")
     reg.cleanup()
   })
 

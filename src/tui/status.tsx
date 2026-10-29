@@ -176,6 +176,9 @@ export function registerStatus(ctx: StatusCtx): { cleanup: () => void; status: (
         const sessionID = input?.sessionID
         if (sessionID !== renderedSession()) {
           setRenderedSession(sessionID)
+          // drop the previous session's banner immediately — stale display is a
+          // cross-session leak too, and a failed fetch must not pin it permanently
+          setStatus(null)
           if (sessionID !== undefined) void refreshStatus()
         }
         return renderSidebarBlock()
