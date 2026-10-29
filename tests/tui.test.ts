@@ -720,6 +720,20 @@ describe("commands module (registration)", () => {
     expect(c.toasts.some((t) => JSON.stringify(t).includes("kickoff prompt failed"))).toBe(true)
   })
 
+  test("pwn createOperation RESOLVING a typed error: error toast only — no success toast, no kickoff (F4)", async () => {
+    const c = commandsCtx()
+    // lenient transport shape: the typed error resolves instead of rejecting —
+    // without the errorType guard this toasts "Operation … active" and kicks
+    // off a session for an operation that was never created
+    c.client.createOperation = async () => ({ type: "no_operation", message: "store unwritable" })
+    registerCommands(c.ctx as never)
+    c.subs["tui.session.select"]![0]!({ data: { sessionID: "s1" } })
+    await runCommand(c, "hopper.pwn", "example.test")
+    expect(c.toasts.some((t) => (t as { variant?: string }).variant === "error" && JSON.stringify(t).includes("store unwritable"))).toBe(true)
+    expect(c.toasts.some((t) => (t as { variant?: string }).variant === "success")).toBe(false)
+    expect(c.calls.some((call) => call.method === "session.prompt")).toBe(false)
+  })
+
   test("session.deleted clears the current-session holder", () => {
     currentSession.reset()
     const c = commandsCtx()
@@ -904,7 +918,7 @@ describe("guard.ask dialog", () => {
   }
   type GuardAnswer = { askId: string; choice: string; operationId?: string }
 
-  function guardCtx(listItems: OperationListItem[] = opsAll) {
+  function guardCtx(listItems: OperationListItem[] = opsAll, opts: { rejectSelect?: boolean } = {}) {
     let listFetches = 0
     const selects: Array<{ spec: GuardSelectSpec; resolve: (value: unknown) => void }> = []
     const answers: GuardAnswer[] = []
@@ -914,6 +928,7 @@ describe("guard.ask dialog", () => {
         dialog: {
           // deferred like the real one: the dialog stays open until the test resolves it
           select: (i: GuardSelectSpec) => {
+            if (opts.rejectSelect) return Promise.reject(new Error("dialog torn down"))
             return new Promise<unknown>((resolve) => selects.push({ spec: i, resolve }))
           },
         },
@@ -1021,6 +1036,20 @@ describe("guard.ask dialog", () => {
     fire(g, ask())
     await settle()
     g.selects[0]!.resolve(undefined)
+    await settle()
+    expect(g.answers).toEqual([{ askId: "ask1", choice: "deny" }])
+    reg.cleanup()
+  })
+
+  test("a REJECTED select (teardown/supersession) answers deny — logged, never an unhandled rejection (F6)", async () => {
+    currentSession.reset()
+    currentSession.set("s1")
+    const g = guardCtx(opsAll, { rejectSelect: true })
+    const reg = registerGuardDialog(g.ctx as never)
+    fire(g, ask())
+    // two settles: if onAsk left the rejection unhandled, bun's default
+    // unhandled-rejection handling fails this run right here
+    await settle()
     await settle()
     expect(g.answers).toEqual([{ askId: "ask1", choice: "deny" }])
     reg.cleanup()

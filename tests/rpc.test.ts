@@ -179,6 +179,13 @@ describe("hopper rpc handlers", () => {
     // the singleton-era active-op fallback is gone: no operationId reads as empty
     const bare = await (m.rpcHandlers.findings as (i: unknown, c: unknown) => Promise<any>)({}, handlerCtx())
     expect(bare).toEqual({ items: [] })
+    // F2: JSON null slips === undefined checks but must read as "no id" too —
+    // listFindings treats null as falsy ⇒ unfiltered cross-op bleed
+    const nullId = await (m.rpcHandlers.findings as (i: unknown, c: unknown) => Promise<any>)(
+      { operationId: null },
+      handlerCtx(),
+    )
+    expect(nullId).toEqual({ items: [] })
     const named = await (m.rpcHandlers.findings as (i: unknown, c: unknown) => Promise<any>)(
       { operationId: created.operation.id },
       handlerCtx(),
@@ -306,6 +313,12 @@ describe("hopper rpc handlers: binding model (spec §6)", () => {
     expect(b2).toBeNull()
     expect(m.rpcEvents).toContainEqual({ name: "binding.changed", data: { sessionID: "ses_sos1" } })
     expect(m.rpcEvents).toContainEqual({ name: "binding.changed", data: { sessionID: "ses_sos2" } })
+    // F5: a status flip is a one-operation change — spec §6 says operation.changed
+    // fires for "operation list or one operation changed", like delete/setOpsec do.
+    // Count, not presence: createOperation already emitted one for this op above.
+    expect(
+      m.rpcEvents.filter((e) => e.name === "operation.changed" && (e.data as { operationId: string }).operationId === created.operation.id),
+    ).toHaveLength(2)
     const list = await handler(m, "operationsList")({}, handlerCtx())
     expect(list.items.find((i: any) => i.id === created.operation.id).status).toBe("completed")
     const no = await handler(m, "setOperationStatus")({ operationId: "op_nope", status: "archived" }, handlerCtx())
@@ -373,6 +386,26 @@ describe("hopper rpc handlers: binding model (spec §6)", () => {
     expect((resolution as { mode: string; operation?: { id: string } }).operation!.id).toBe(res.operation.id)
   })
 
+  test("createOperation with a null sessionID binds nothing and emits no binding.changed (F8)", async () => {
+    const m = await setup()
+    // JSON-RPC {"sessionID": null} slips a !== undefined check — the truthy
+    // guard must keep it from writing an inert NULL-PK binding row
+    const res = await handler(m, "createOperation")(
+      { name: "nullses", target: "null.test", sessionID: null },
+      handlerCtx(),
+    )
+    expect(res.operation.name).toBe("nullses")
+    expect(m.rpcEvents.filter((e) => e.name === "binding.changed")).toEqual([])
+    const store = HopperStore.open(configDir)
+    let bound: string[]
+    try {
+      bound = store.listBoundSessions(res.operation.id)
+    } finally {
+      store.close()
+    }
+    expect(bound).toEqual([])
+  })
+
   test("guardAnswer: malformed bind (no operationId) → accepted:false with the ask still pending; real answers resolve; stale asks are refused", async () => {
     const emitted: GuardAsk[] = []
     let gateRef: UnboundGate | undefined
@@ -430,6 +463,50 @@ describe("hopper rpc handlers: binding model (spec §6)", () => {
       )
       expect(bound).toEqual({ accepted: true })
       await expect(pending2).resolves.toBeUndefined()
+    } finally {
+      setUnboundGateFactory(null)
+    }
+  })
+
+  test("guardAnswer: bind naming a TERMINAL operation → accepted:false, the ask stays pending (F1)", async () => {
+    const emitted: GuardAsk[] = []
+    let gateRef: UnboundGate | undefined
+    setUnboundGateFactory((forwardAsk) => {
+      gateRef = createUnboundGate({
+        timeoutMs: 60_000,
+        emit: (ask) => {
+          emitted.push(ask)
+          forwardAsk(ask)
+        },
+      })
+      return gateRef
+    })
+    try {
+      const m = await setup()
+      const created = await handler(m, "createOperation")({ name: "done-op", target: "done.test" }, handlerCtx())
+      await handler(m, "setOperationStatus")({ operationId: created.operation.id, status: "completed" }, handlerCtx())
+      const hook = m.toolHooks["execute.before"]! as (event: unknown) => Promise<void>
+      const pending = hook({
+        sessionID: "ses_ga_terminal",
+        agent: "pentest",
+        messageID: "msg_ga_t",
+        id: "call_ga_t",
+        tool: "webfetch",
+        input: { url: "https://evil.test/x" },
+      })
+      for (let i = 0; emitted.length === 0 && i < 100; i++) await new Promise((r) => setTimeout(r, 5))
+      const askId = emitted[0]!.askId
+      // the race F1 closes: the dialog named op X, another tab completed X —
+      // binding a terminal op must be refused exactly like a nonexistent one
+      const res = await handler(m, "guardAnswer")(
+        { askId, choice: "bind", operationId: created.operation.id },
+        handlerCtx(),
+      )
+      expect(res).toEqual({ accepted: false })
+      expect(gateRef!.pending()).toEqual([askId])
+      // settle the pending call so the test leaves nothing hanging
+      await handler(m, "guardAnswer")({ askId, choice: "deny" }, handlerCtx())
+      await expect(pending).rejects.toThrow("[hopper] operator denied:")
     } finally {
       setUnboundGateFactory(null)
     }

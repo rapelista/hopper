@@ -4,7 +4,6 @@ import {
   parseScope,
   isInScope,
   loadScope,
-  saveScope,
   scopeViolations,
   type Scope,
 } from "../src/lib/scope"
@@ -52,17 +51,21 @@ describe("isInScope", () => {
   })
 })
 
-describe("URL-form scope targets are normalized", () => {
-  test("saveScope normalizes url targets to hostnames", () => {
+describe("loadScope (migration reader — the file writer is gone)", () => {
+  test("reads the relic file verbatim when present, null when absent", () => {
     const dir = require("node:os").tmpdir() + "/hopper-fix1-" + Date.now()
     require("node:fs").mkdirSync(dir, { recursive: true })
-    saveScope(dir, { targets: ["http://localhost:3000", "https://app.lab.test/x"], strict: true, created: "x" })
-    const loaded = loadScope(dir)!
-    expect(loaded.targets).toEqual(["localhost", "app.lab.test"])
-    expect(isInScope(loaded, "localhost")).toBe(true)
+    expect(loadScope(dir)).toBeNull() // no relic
+    require("node:fs").writeFileSync(
+      dir + "/scope.json",
+      JSON.stringify({ targets: ["lab.test"], strict: false, created: "2025-01-01T00:00:00.000Z" }),
+    )
+    expect(loadScope(dir)).toEqual({ targets: ["lab.test"], strict: false, created: "2025-01-01T00:00:00.000Z" })
     require("node:fs").rmSync(dir, { recursive: true, force: true })
   })
+})
 
+describe("URL-form scope targets are normalized defensively", () => {
   test("isInScope defensively normalizes url-shaped targets", () => {
     expect(isInScope({ targets: ["https://raw.example.test/path"], strict: true, created: "x" }, "raw.example.test")).toBe(true)
   })

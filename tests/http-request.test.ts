@@ -3,7 +3,7 @@ import { mkdirSync, rmSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { tmpdir } from "node:os"
 import { request } from "../src/lib/tools"
-import { saveScope, ScopeError } from "../src/lib/scope"
+import { ScopeError } from "../src/lib/scope"
 
 let configDir: string
 let emptyDir: string
@@ -15,7 +15,6 @@ beforeAll(() => {
   rmSync(emptyDir, { recursive: true, force: true })
   mkdirSync(configDir, { recursive: true })
   mkdirSync(emptyDir, { recursive: true })
-  saveScope(configDir, { targets: ["*.example.test"], strict: true, created: "2026-10-28T00:00:00Z" })
 })
 
 afterAll(() => {

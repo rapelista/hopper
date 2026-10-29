@@ -271,7 +271,12 @@ export class HopperStore {
     this.db.run("DELETE FROM bindings WHERE session_id = ?", [sessionID])
   }
 
-  /** Remove a session's binding row (session-ended cleanup; no-op if unknown). */
+  /**
+   * Remove a session's binding row (session-ended cleanup; no-op if unknown).
+   * Reserved for eager prune integrations; binding rows for dead sessions are
+   * inert by resolveSession's unbound degradation (design decision #5's
+   * fallback reading).
+   */
   purgeSession(sessionID: string): void {
     this.db.run("DELETE FROM bindings WHERE session_id = ?", [sessionID])
   }
@@ -293,8 +298,10 @@ export class HopperStore {
 
   /**
    * What a session may touch: the bound operation + its scope, free, or
-   * unbound. A bound row whose operation (or scopes row) vanished is corrupt
-   * state — degrades to unbound. Never throws on a bad store read.
+   * unbound. Corrupt state degrades to unbound: a bound row whose operation
+   * (or scopes row) vanished, or any malformed mode/op combination (bound
+   * with a NULL op, free with an op id) — never a silent free pass, never a
+   * throw on a bad store read.
    */
   resolveSession(sessionID: string): SessionResolution {
     try {
@@ -302,7 +309,10 @@ export class HopperStore {
         | { operation_id: string | null; mode: string }
         | null
       if (!row) return { mode: "unbound" }
-      if (row.mode !== "bound" || row.operation_id === null) return { mode: "free" }
+      // only a well-formed free row (mode 'free' AND NULL op) reads as free;
+      // every other malformed combination is corrupt ⇒ unbound (spec §2)
+      if (row.mode === "free" && row.operation_id === null) return { mode: "free" }
+      if (row.mode !== "bound" || row.operation_id === null) return { mode: "unbound" }
       const opRow = this.db.query("SELECT * FROM operations WHERE id = ?").get(row.operation_id) as
         | Record<string, unknown>
         | null
@@ -430,13 +440,6 @@ export class HopperStore {
       .query("SELECT * FROM operations ORDER BY updated_at DESC")
       .all() as Array<Record<string, unknown>>
     return rows.map(rowToOperation)
-  }
-
-  archiveOperation(id: string): void {
-    this.db.run("UPDATE operations SET status = 'archived', updated_at = ? WHERE id = ?", [
-      new Date().toISOString(),
-      id,
-    ])
   }
 
   addFinding(

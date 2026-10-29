@@ -370,7 +370,7 @@ export function buildTools(
     {
       name: "http-request",
       description:
-        "Precision instrument for manual web testing: injections, auth bypass, IDOR, SSRF probes. Performs one HTTP request with exact method/headers/body and returns status, headers, body, a SHA256 over the raw bytes (evidence-grade), and the redirect hops followed. The URL and every redirect hop are checked against the active operation scope — an out-of-scope target raises the operator dialog (allow once / always / deny) instead of refusing. Sensitive response headers are redacted in the echo.",
+        "Precision instrument for manual web testing: injections, auth bypass, IDOR, SSRF probes. Performs one HTTP request with exact method/headers/body and returns status, headers, body, a SHA256 over the raw bytes (evidence-grade), and the redirect hops followed. The URL and every redirect hop are checked against the session's bound operation scope — an out-of-scope target raises the operator dialog (allow once / always / deny) instead of refusing. Sensitive response headers are redacted in the echo.",
       input: {
         type: "object",
         properties: {
@@ -423,7 +423,7 @@ export function buildTools(
     {
       name: "scanner",
       description:
-        "Active web/network recon: portscan (nmap service scan), dirfuzz (ffuf directory brute-force with FUZZ placeholder in the target URL), and techscan (whatweb fingerprinting). Targets are checked against the active operation scope — an out-of-scope target or a missing scope raises the operator dialog (allow once / always / deny) instead of refusing. Non-zero exit codes are returned as signal, not errors. Use before drilling with http-request or shell.",
+        "Active web/network recon: portscan (nmap service scan), dirfuzz (ffuf directory brute-force with FUZZ placeholder in the target URL), and techscan (whatweb fingerprinting). Targets are checked against the session's bound operation scope — an out-of-scope target or a missing scope raises the operator dialog (allow once / always / deny) instead of refusing. Non-zero exit codes are returned as signal, not errors. Use before drilling with http-request or shell.",
       input: {
         type: "object",
         properties: {

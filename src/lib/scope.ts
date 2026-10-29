@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
+import { existsSync, readFileSync } from "node:fs"
 import { join } from "node:path"
 
 export class ScopeError extends Error {
@@ -52,12 +52,6 @@ export function normalizeTarget(target: string): string {
     }
   }
   return normalizeHost(t)
-}
-
-export function saveScope(configDir: string, scope: Scope): void {
-  mkdirSync(configDir, { recursive: true })
-  const normalized: Scope = { ...scope, targets: scope.targets.map(normalizeTarget) }
-  writeFileSync(join(configDir, "scope.json"), JSON.stringify(normalized, null, 2) + "\n")
 }
 
 /** Normalize a host: lowercase, strip :port (IPv4/hostname), unwrap [v6]. */

@@ -3,7 +3,6 @@ import { mkdirSync, rmSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { tmpdir } from "node:os"
 import { buildCommand, runScan, COMMON_WORDLIST, buildTools } from "../src/lib/tools"
-import { saveScope } from "../src/lib/scope"
 
 let configDir: string
 let emptyDir: string
@@ -16,7 +15,6 @@ beforeAll(() => {
   rmSync(emptyDir, { recursive: true, force: true })
   mkdirSync(configDir, { recursive: true })
   mkdirSync(emptyDir, { recursive: true })
-  saveScope(configDir, { targets: ["*.example.test", "10.0.0.0/8"], strict: true, created: "x" })
   // ensure a wordlist file exists so buildCommand can default to it
   try {
     writeFileSync(COMMON_WORDLIST, "admin\nbackup\n.git\n")

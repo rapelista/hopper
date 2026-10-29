@@ -304,9 +304,11 @@ export default Plugin.define({
       },
       findings: async (input: unknown) => {
         const { operationId } = input as { operationId?: string }
-        // R7: the singleton-era active-op fallback is gone — without an
-        // operationId the ledger reads empty (callers name the op they want).
-        if (operationId === undefined) return { items: [] }
+        // R7/F2: the singleton-era active-op fallback is gone — without a real
+        // operationId (missing OR JSON null) the ledger reads empty (callers
+        // name the op they want); null must never fall through to
+        // listFindings' falsy-argument "list everything" branch.
+        if (!operationId) return { items: [] }
         const store = HopperStore.open(configDir)
         try {
           const items = store
@@ -322,10 +324,12 @@ export default Plugin.define({
         const store = HopperStore.open(configDir)
         try {
           const op = store.createOperation(name, normalizeTarget(target))
-          if (sessionID !== undefined) store.upsertBinding(sessionID, op.id)
+          // F8: truthy check — JSON-RPC {"sessionID": null} slips a !==
+          // undefined check and would write an inert NULL-PK binding row
+          if (sessionID) store.upsertBinding(sessionID, op.id)
           // emit failure must not fail a mutation that landed
           void rpcReg.events.emit("operation.changed", { operationId: op.id }).catch(() => {})
-          if (sessionID !== undefined) void rpcReg.events.emit("binding.changed", { sessionID }).catch(() => {})
+          if (sessionID) void rpcReg.events.emit("binding.changed", { sessionID }).catch(() => {})
           return { operation: { id: op.id, name: op.name, target: op.target, createdAt: op.created_at } }
         } finally {
           store.close()
@@ -426,6 +430,10 @@ export default Plugin.define({
           })
         }
         for (const sid of affected) void rpcReg.events.emit("binding.changed", { sessionID: sid }).catch(() => {})
+        // spec §6: operation.changed means "operation list or one operation
+        // changed" — a status flip is a one-operation change (deleteOperation
+        // and setOpsec emit it; this must too)
+        void rpcReg.events.emit("operation.changed", { operationId }).catch(() => {})
         return { status }
       },
       deleteOperation: async (input: unknown, context: RpcErrCtx<"no_operation">) => {
@@ -454,15 +462,17 @@ export default Plugin.define({
         const { askId, choice, operationId } = input as { askId: string; choice: GuardAnswerChoice; operationId?: string }
         if (choice === "bind") {
           // controller ruling: never write a bound row the store cannot
-          // honor. A missing OR nonexistent operationId is refused the same
-          // type-safe way — { accepted: false }, the ask stays pending for a
-          // well-formed answer.
+          // honor. A missing, nonexistent, OR TERMINAL operationId is refused
+          // the same type-safe way — { accepted: false }, the ask stays
+          // pending for a well-formed answer. Terminal ops mirror the bind
+          // rpc's not_active: the dialog can name an op another tab just
+          // completed, and binding read-only history corrupts the session.
           let known = false
           if (operationId !== undefined) {
             try {
               const store = HopperStore.open(configDir)
               try {
-                known = store.listOperations().some((o) => o.id === operationId)
+                known = store.listOperations().some((o) => o.id === operationId && o.status === "active")
               } finally {
                 store.close()
               }

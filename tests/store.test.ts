@@ -164,6 +164,27 @@ describe("HopperStore resolveSession", () => {
     expect(reopened.resolveSession("ses_ghost")).toEqual({ mode: "unbound" })
     reopened.close()
   })
+
+  test("a corrupt bound row with a NULL operation degrades to unbound, never free (spec §2, F3)", () => {
+    const { store, dir } = openStore()
+    const op = store.createOperation("op", "lab.test")
+    store.upsertBinding("ses_bound_ok", op.id)
+    store.close()
+    const db = openRaw(dir)
+    // raw-seeded corruption the CHECK cannot prevent: mode 'bound' with a NULL
+    // operation_id, and mode 'free' pointing at an operation
+    db.run("INSERT INTO bindings (session_id, operation_id, mode, updated_at) VALUES ('ses_corrupt_null', NULL, 'bound', '2025-01-01T00:00:00.000Z')")
+    db.run("INSERT INTO bindings (session_id, operation_id, mode, updated_at) VALUES ('ses_corrupt_free', 'some-op', 'free', '2025-01-01T00:00:00.000Z')")
+    db.close()
+    const reopened = HopperStore.open(dir)
+    expect(reopened.resolveSession("ses_corrupt_null")).toEqual({ mode: "unbound" })
+    expect(reopened.resolveSession("ses_corrupt_free")).toEqual({ mode: "unbound" })
+    // well-formed rows still resolve both ways
+    expect(reopened.resolveSession("ses_bound_ok").mode).toBe("bound")
+    reopened.setFree("ses_free_ok")
+    expect(reopened.resolveSession("ses_free_ok")).toEqual({ mode: "free" })
+    reopened.close()
+  })
 })
 
 describe("HopperStore lifecycle", () => {

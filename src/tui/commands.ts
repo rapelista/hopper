@@ -246,10 +246,18 @@ export function registerCommands(ctx: CommandsCtx): { cleanup: () => void } {
     }
     let created: { operation: OperationSummary }
     try {
-      created = await rpc.createOperation(
+      const res = await rpc.createOperation(
         sessionID === undefined ? { name, target: t } : { name, target: t, sessionID },
         opts(),
       )
+      if (errorType(res) !== undefined) {
+        // a typed error that RESOLVES (lenient transport) is not a success —
+        // same guard as runAndToast/runOpsec: no "active" toast, no kickoff
+        // for an operation that was never created
+        ctx.ui.toast.show({ title: "Hopper", message: errText(res), variant: "error" })
+        return
+      }
+      created = res
     } catch (err) {
       console.error("[hopper-tui] createOperation failed:", err)
       ctx.ui.toast.show({

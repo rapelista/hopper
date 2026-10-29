@@ -55,7 +55,16 @@ export function registerGuardDialog(ctx: GuardDialogCtx): { cleanup: () => void 
       { value: "allow-once", title: "Allow once" },
       { value: "deny", title: "Deny" },
     ]
-    const picked = await ctx.ui.dialog.select({ title: askTitle(ask.reason), options })
+    let picked: unknown
+    try {
+      picked = await ctx.ui.dialog.select({ title: askTitle(ask.reason), options })
+    } catch (err) {
+      // a torn-down or superseded select must never surface as an unhandled
+      // rejection (Bun's default would kill the TUI) — dismissal semantics,
+      // same as esc: answer deny
+      console.error("[hopper-tui] guard dialog failed:", err)
+      picked = undefined
+    }
     // Dismissal IS a decision: an esc'd dialog must not leave the tool hanging
     // on the server timeout — an explicit dismiss is answered as an explicit deny.
     const choice: GuardAnswerChoice =
