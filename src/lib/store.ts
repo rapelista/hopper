@@ -247,8 +247,9 @@ export class HopperStore {
   }
 
   /**
-   * @deprecated singleton-era read. Kept only until Task 6 reworks the
-   * index.ts/tools.ts/report.ts callers onto the binding API; delete then.
+   * @deprecated singleton-era read. Callers left: the `findings` RPC handler's
+   * optional-operationId fallback and tools.ts/report.ts (Task 7 reworks those
+   * onto the binding API); delete this with the last of them.
    * Returns the most recently updated active operation, if any.
    */
   getActiveOperation(): Operation | null {
@@ -286,6 +287,14 @@ export class HopperStore {
   /** Remove a session's binding row (session-ended cleanup; no-op if unknown). */
   purgeSession(sessionID: string): void {
     this.db.run("DELETE FROM bindings WHERE session_id = ?", [sessionID])
+  }
+
+  /** Sessions currently bound to an operation — the `binding.changed` fan-out list on lifecycle changes. */
+  listBoundSessions(operationId: string): string[] {
+    const rows = this.db
+      .query("SELECT session_id FROM bindings WHERE operation_id = ? AND mode = 'bound'")
+      .all(operationId) as Array<{ session_id: string }>
+    return rows.map((r) => r.session_id)
   }
 
   getBinding(sessionID: string): { operation_id: string | null; mode: "bound" | "free" } | null {
@@ -331,6 +340,22 @@ export class HopperStore {
     } catch {
       return null // corrupt targets JSON — same degrade path as every other read
     }
+  }
+
+  /**
+   * Flip an operation's scope-row strict flag (the opsec level). Returns
+   * false when the operation (or its scopes row) is unknown — the caller
+   * maps that to a typed no_operation refusal.
+   */
+  setScopeStrict(operationId: string, strict: boolean): boolean {
+    const row = this.db.query("SELECT 1 FROM scopes WHERE operation_id = ?").get(operationId)
+    if (!row) return false
+    this.db.run("UPDATE scopes SET strict = ?, updated_at = ? WHERE operation_id = ?", [
+      strict ? 1 : 0,
+      new Date().toISOString(),
+      operationId,
+    ])
+    return true
   }
 
   // -- operation lifecycle --------------------------------------------------

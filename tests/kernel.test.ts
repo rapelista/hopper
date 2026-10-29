@@ -559,6 +559,21 @@ describe("guard: free and unbound sessions (binding resolution + gate)", () => {
     expect((rpcAsk!.data as { askId: string }).askId).toBe(ask.askId)
   })
 
+  test("unbound session: shell command referencing an external host reaches the gate (R6)", async () => {
+    const gate = injectGate({ answer: (ask, g) => g.answer(ask.askId, "allow-once") })
+    const asserts: unknown[] = []
+    const { ctx, toolHooks } = makeMockCtx(tmpProject, { assert: async (i: unknown) => { asserts.push(i) } })
+    await (hopperPlugin as { setup: (ctx: unknown) => Promise<unknown> }).setup(ctx)
+    const hook = toolHooks["execute.before"]! as (event: unknown) => Promise<void>
+    await expect(
+      hook({ ...EVENT_BASE, sessionID: "ses_unb_shell", tool: "shell", input: { command: "nmap -p 80 evil.test" } }),
+    ).resolves.toBeUndefined() // allow-once: proceeds, but the operator was asked first
+    expect(gate.emitted.length).toBe(1)
+    expect(gate.emitted[0]!.targets).toEqual(["evil.test"])
+    expect(gate.emitted[0]!.reason).toContain("no active operation scope")
+    expect(asserts.length).toBe(0) // the native dialog is not used for unbound sessions
+  })
+
   test("answered bind: binding row written and the triggering call proceeds; fence applies from the next call", async () => {
     const op = bindSession("ses_seed_only", "example.test") // creates the op without binding the asking session
     const store = HopperStore.open(configDir)

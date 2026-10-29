@@ -3,10 +3,10 @@ import { existsSync, readdirSync, readFileSync } from "node:fs"
 import { join } from "node:path"
 import { bashScopeGuard } from "./lib/guard"
 import { buildTools, type ConfirmScopeEscape } from "./lib/tools"
-import { loadScope, saveScope, normalizeTarget, scopeViolations, OPSEC_ADVISORY_HOSTS, type Scope } from "./lib/scope"
+import { normalizeTarget, scopeViolations, OPSEC_ADVISORY_HOSTS, type Scope } from "./lib/scope"
 import { HopperStore, type SessionResolution } from "./lib/store"
 import { createUnboundGate, type GuardAsk, type UnboundGate } from "./lib/unbound-gate"
-import { Hopper, type HopperNotify } from "./rpc"
+import { Hopper, type GuardAnswerChoice, type HopperNotify } from "./rpc"
 
 export { bashScopeGuard } from "./lib/guard"
 export { buildTools } from "./lib/tools"
@@ -189,6 +189,23 @@ interface ContextEvent {
 /** v2 renamed the bash tool to "shell" — guard both names. */
 const SHELL_TOOLS = new Set(["shell", "bash"])
 
+/**
+ * Synthetic empty scope for UNBOUND shell extraction (controller amendment
+ * R6): `bashScopeGuard(null, …)` extracts nothing, which let an unbound
+ * session shell `nmap … evil.test` straight past the gate while a webfetch
+ * to the same host triggered it. Extracting against an empty target list
+ * turns every host the command references into a gate target. Bound-branch
+ * extraction is unaffected.
+ */
+const UNBOUND_EXTRACT_SCOPE: Scope = { targets: [], strict: false, created: "" }
+
+/** Handler-context subset used by the typed-error handlers (matches Rpc.ErrorFactory over the contract's error names). */
+interface RpcErrCtx<E extends string> {
+  error: (type: E, message: string, data: { message: string }) => unknown
+  signal: AbortSignal
+}
+
+
 // ---------------------------------------------------------------------------
 // unbound-session gate — one instance per setup; the guard asks through it,
 // the guardAnswer RPC (Task 6) answers through it.
@@ -254,23 +271,31 @@ export default Plugin.define({
     let forwardAsk: (ask: GuardAsk) => void = () => {}
     const gate = unboundGateFactory((ask) => forwardAsk(ask))
 
-    // 0. RPC surface: operation/findings/opsec state for the TUI part and any client.
+    // 0. RPC surface: per-session bindings + the operation ledger for the
+    //    TUI part and any client (spec §6). Mutations land first; events
+    //    fire-and-forget — an emit failure must never fail a landed mutation.
     const rpcReg = await ctx.rpc.register(Hopper, {
-      operationStatus: async () => {
+      // Deprecated compatibility shape: with a sessionID, the session's BOUND
+      // operation + its opsec + its counts; free/unbound/missing sessionID
+      // reads as no-operation.
+      operationStatus: async (input: unknown) => {
+        const { sessionID } = input as { sessionID?: string }
+        const counts = { candidate: 0, observed: 0, verified: 0, reportable: 0, rejected: 0, stale: 0 }
         const store = HopperStore.open(configDir)
         try {
-          const op = store.getActiveOperation()
-          let opsec: "normal" | "strict" = "normal"
-          try {
-            opsec = loadScope(configDir)?.strict ? "strict" : "normal"
-          } catch {
-            opsec = "normal" // unreadable scope behaves like no scope — never throw
+          const resolution = sessionID === undefined ? null : store.resolveSession(sessionID)
+          if (resolution === null || resolution.mode !== "bound") {
+            return { operation: null, opsec: "normal", findings: counts }
           }
-          const counts: Record<string, number> = { candidate: 0, observed: 0, verified: 0, reportable: 0, rejected: 0, stale: 0 }
-          if (op) for (const f of store.listFindings(op.id)) counts[f.status] = (counts[f.status] ?? 0) + 1
+          for (const f of store.listFindings(resolution.operation.id)) counts[f.status] = (counts[f.status] ?? 0) + 1
           return {
-            operation: op ? { id: op.id, name: op.name, target: op.target, createdAt: op.created_at } : null,
-            opsec,
+            operation: {
+              id: resolution.operation.id,
+              name: resolution.operation.name,
+              target: resolution.operation.target,
+              createdAt: resolution.operation.created_at,
+            },
+            opsec: resolution.scope.strict ? "strict" : "normal",
             findings: counts,
           }
         } finally {
@@ -291,66 +316,145 @@ export default Plugin.define({
         }
       },
       createOperation: async (input: unknown) => {
-        const { name, target } = input as { name: string; target: string }
+        const { name, target, sessionID } = input as { name: string; target: string; sessionID?: string }
         const store = HopperStore.open(configDir)
         try {
           const op = store.createOperation(name, normalizeTarget(target))
+          if (sessionID !== undefined) store.upsertBinding(sessionID, op.id)
           // emit failure must not fail a mutation that landed
           void rpcReg.events.emit("operation.changed", { operationId: op.id }).catch(() => {})
+          if (sessionID !== undefined) void rpcReg.events.emit("binding.changed", { sessionID }).catch(() => {})
           return { operation: { id: op.id, name: op.name, target: op.target, createdAt: op.created_at } }
         } finally {
           store.close()
         }
       },
-      // Task 6 replaces this stub
-      setOpsec: async (input: unknown, context: { error: (type: "no_operation", message: string, data: { message: string }) => unknown; signal: AbortSignal }) => {
-        const { level } = input as { level: "normal" | "strict" }
-        let scope: ReturnType<typeof loadScope> = null
-        try {
-          scope = loadScope(configDir)
-        } catch {
-          scope = null // unreadable scope cannot be adjusted — typed error, never a crash
-        }
-        if (scope === null) {
-          return context.error("no_operation", "no active scope to adjust — create an operation and pass its operationId", {
-            message: "no active scope to adjust — create an operation and pass its operationId",
+      setOpsec: async (input: unknown, context: RpcErrCtx<"no_operation">) => {
+        const { operationId, level } = input as { operationId?: string; level: "normal" | "strict" }
+        if (operationId === undefined) {
+          // controller ruling: no implicit active-op pick — an opsec level is
+          // always written to a named operation
+          return context.error("no_operation", "setOpsec requires an operationId", {
+            message: "setOpsec requires an operationId",
           })
         }
-        saveScope(configDir, { ...scope, strict: level === "strict" })
         const store = HopperStore.open(configDir)
-        let operationId: string | null = null
+        let written = false
         try {
-          operationId = store.getActiveOperation()?.id ?? null
+          written = store.setScopeStrict(operationId, level === "strict")
         } finally {
           store.close()
+        }
+        if (!written) {
+          return context.error("no_operation", `unknown operation ${operationId}`, {
+            message: `unknown operation ${operationId}`,
+          })
         }
         // emit failure must not fail a mutation that landed
         void rpcReg.events.emit("operation.changed", { operationId }).catch(() => {})
         return { opsec: level }
       },
-      // Task 6 replaces this stub
       operationsList: async () => {
-        throw new Error("[hopper] not implemented until Task 6")
+        const store = HopperStore.open(configDir)
+        try {
+          const items = store.listOperationsWithCounts().map((op) => ({
+            id: op.id,
+            name: op.name,
+            target: op.target,
+            createdAt: op.created_at,
+            status: op.status,
+            findings: op.findings,
+          }))
+          return { items }
+        } finally {
+          store.close()
+        }
       },
-      // Task 6 replaces this stub
-      bind: async () => {
-        throw new Error("[hopper] not implemented until Task 6")
+      bind: async (input: unknown, context: RpcErrCtx<"no_operation" | "not_active">) => {
+        const { sessionID, operationId } = input as { sessionID: string; operationId: string }
+        const store = HopperStore.open(configDir)
+        try {
+          const op = store.listOperations().find((o) => o.id === operationId)
+          if (!op) {
+            return context.error("no_operation", `unknown operation ${operationId}`, {
+              message: `unknown operation ${operationId}`,
+            })
+          }
+          if (op.status !== "active") {
+            // terminal operations are read-only history — they can never be re-entered
+            return context.error("not_active", `operation ${operationId} is ${op.status}, not active`, {
+              message: `operation ${operationId} is ${op.status}, not active`,
+            })
+          }
+          store.upsertBinding(sessionID, operationId)
+        } finally {
+          store.close()
+        }
+        // emit failure must not fail a mutation that landed
+        void rpcReg.events.emit("binding.changed", { sessionID }).catch(() => {})
+        return { operationId }
       },
-      // Task 6 replaces this stub
-      unbind: async () => {
-        throw new Error("[hopper] not implemented until Task 6")
+      unbind: async (input: unknown) => {
+        const { sessionID } = input as { sessionID: string }
+        const store = HopperStore.open(configDir)
+        try {
+          store.clearBinding(sessionID)
+        } finally {
+          store.close()
+        }
+        // emit failure must not fail a mutation that landed
+        void rpcReg.events.emit("binding.changed", { sessionID }).catch(() => {})
+        return { operationId: null }
       },
-      // Task 6 replaces this stub
-      setOperationStatus: async () => {
-        throw new Error("[hopper] not implemented until Task 6")
+      setOperationStatus: async (input: unknown, context: RpcErrCtx<"no_operation">) => {
+        const { operationId, status } = input as { operationId: string; status: "completed" | "archived" }
+        const store = HopperStore.open(configDir)
+        let affected: string[] = []
+        let updated = false
+        try {
+          // capture BEFORE the call: the store flips the status and unbinds these sessions in one transaction
+          affected = store.listBoundSessions(operationId)
+          updated = store.setOperationStatus(operationId, status) !== null
+        } finally {
+          store.close()
+        }
+        if (!updated) {
+          return context.error("no_operation", `unknown operation ${operationId}`, {
+            message: `unknown operation ${operationId}`,
+          })
+        }
+        for (const sid of affected) void rpcReg.events.emit("binding.changed", { sessionID: sid }).catch(() => {})
+        return { status }
       },
-      // Task 6 replaces this stub
-      deleteOperation: async () => {
-        throw new Error("[hopper] not implemented until Task 6")
+      deleteOperation: async (input: unknown, context: RpcErrCtx<"no_operation">) => {
+        const { operationId } = input as { operationId: string }
+        const store = HopperStore.open(configDir)
+        let affected: string[] = []
+        let deleted = false
+        try {
+          // same fan-out as setOperationStatus: deletion unbinds these sessions
+          affected = store.listBoundSessions(operationId)
+          deleted = store.deleteOperation(operationId)
+        } finally {
+          store.close()
+        }
+        if (!deleted) {
+          return context.error("no_operation", `unknown operation ${operationId}`, {
+            message: `unknown operation ${operationId}`,
+          })
+        }
+        for (const sid of affected) void rpcReg.events.emit("binding.changed", { sessionID: sid }).catch(() => {})
+        return { ok: true }
       },
-      // Task 6 replaces this stub
-      guardAnswer: async () => {
-        throw new Error("[hopper] not implemented until Task 6")
+      guardAnswer: async (input: unknown) => {
+        const { askId, choice, operationId } = input as { askId: string; choice: GuardAnswerChoice; operationId?: string }
+        if (choice === "bind" && operationId === undefined) {
+          // controller ruling: never write a NULL-op bound row. The contract
+          // exposes no error shape on guardAnswer, so the type-safe refusal
+          // is { accepted: false } — the ask stays pending for a well-formed answer.
+          return { accepted: false }
+        }
+        return { accepted: gate.answer(askId, choice, operationId) }
       },
     })
     // The gate's asks ride the rpc event bus to the operator (TUI); a missing
@@ -486,7 +590,11 @@ export default Plugin.define({
         if (SHELL_TOOLS.has(event.tool)) {
           const command = input.command
           if (typeof command === "string") {
-            const guard = bashScopeGuard(scope, command)
+            // R6: unbound sessions extract against a synthetic EMPTY scope so
+            // shell commands reach the gate (`bashScopeGuard(null, …)`
+            // extracts nothing, which silently bypassed it); bound-branch
+            // extraction stays verbatim.
+            const guard = bashScopeGuard(resolution.mode === "unbound" ? UNBOUND_EXTRACT_SCOPE : scope, command)
             if (!guard.ok) violations.push(...guard.violations)
           }
         } else if (event.tool === "webfetch" || event.tool === "http-request") {

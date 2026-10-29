@@ -251,6 +251,12 @@ export const Hopper = Rpc.define({
         additionalProperties: false,
       },
       errors: {
+        no_operation: {
+          type: "object",
+          properties: { message: { type: "string" } },
+          required: ["message"],
+          additionalProperties: false,
+        },
         not_active: {
           type: "object",
           properties: { message: { type: "string" } },
