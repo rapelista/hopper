@@ -1,7 +1,7 @@
 import { Database } from "bun:sqlite"
 import { mkdirSync } from "node:fs"
 import { join } from "node:path"
-import { saveScope } from "./scope"
+import { loadScope, saveScope } from "./scope"
 import { assertTransition, FindingError, type FindingStatus, type Severity } from "./findings"
 import type { CapturedEvidence, EvidenceKind } from "./evidence"
 
@@ -53,12 +53,60 @@ export class HopperStore {
     mkdirSync(dbPath.slice(0, dbPath.lastIndexOf("/")), { recursive: true })
     this.db = new Database(dbPath)
     this.db.run("PRAGMA journal_mode = WAL")
+    this.migrate()
+  }
+
+  /**
+   * Schema migration keyed on PRAGMA user_version (current schema = 2).
+   * Legacy DBs (version 0, status CHECK ('active','archived')) get a one-time
+   * upgrade: SQLite cannot ALTER a CHECK, so `operations` is recreated with
+   * the widened CHECK and its rows copied (all statuses in the wild are
+   * 'active'|'archived' — valid under the new CHECK); the file-based
+   * scope.json is imported into the active operation's scopes row. The
+   * declared REFERENCES ... ON DELETE CASCADE on the new tables is
+   * informational only — nothing may depend on FK enforcement
+   * (foreign_keys stays OFF; no pragma enables it).
+   */
+  private migrate(): void {
+    const { user_version: version } = this.db.query("PRAGMA user_version").get() as { user_version: number }
+    if (version >= 2) return
+    const legacy = this.db.query("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'operations'").get() !== null
+    if (legacy) {
+      this.db.run("BEGIN")
+      try {
+        this.db.run(`
+          CREATE TABLE operations_v2 (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            target TEXT NOT NULL,
+            status TEXT NOT NULL CHECK (status IN ('active','completed','archived')),
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+          )
+        `)
+        this.db.run(
+          "INSERT INTO operations_v2 (id, name, target, status, created_at, updated_at) SELECT id, name, target, status, created_at, updated_at FROM operations",
+        )
+        this.db.run("DROP TABLE operations")
+        this.db.run("ALTER TABLE operations_v2 RENAME TO operations")
+        this.db.run("COMMIT")
+      } catch (error) {
+        this.db.run("ROLLBACK")
+        throw error
+      }
+    }
+    this.createTables()
+    if (legacy) this.importLegacyScope()
+    this.db.run("PRAGMA user_version = 2")
+  }
+
+  private createTables(): void {
     this.db.run(`
       CREATE TABLE IF NOT EXISTS operations (
         id TEXT PRIMARY KEY,
         name TEXT NOT NULL,
         target TEXT NOT NULL,
-        status TEXT NOT NULL CHECK (status IN ('active','archived')),
+        status TEXT NOT NULL CHECK (status IN ('active','completed','archived')),
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
       )
@@ -95,6 +143,48 @@ export class HopperStore {
         PRIMARY KEY (evidence_id, finding_id)
       )
     `)
+    this.db.run(`
+      CREATE TABLE IF NOT EXISTS scopes (
+        operation_id TEXT PRIMARY KEY REFERENCES operations(id) ON DELETE CASCADE,
+        targets TEXT NOT NULL,
+        strict INTEGER NOT NULL DEFAULT 1,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      )
+    `)
+    this.db.run(`
+      CREATE TABLE IF NOT EXISTS bindings (
+        session_id TEXT PRIMARY KEY,
+        operation_id TEXT REFERENCES operations(id) ON DELETE CASCADE,
+        mode TEXT NOT NULL CHECK (mode IN ('bound','free')),
+        updated_at TEXT NOT NULL
+      )
+    `)
+  }
+
+  /**
+   * One-time legacy import: the old file-based scope becomes the active
+   * operation's scopes row. Best-effort — an unreadable scope.json relic
+   * never blocks startup. The file is left on disk untouched (a
+   * human-readable relic of the old contract, not ours to delete).
+   */
+  private importLegacyScope(): void {
+    if (!this.configDir) return
+    try {
+      const scope = loadScope(this.configDir)
+      if (!scope) return
+      const active = this.db
+        .query("SELECT id FROM operations WHERE status = 'active' ORDER BY updated_at DESC LIMIT 1")
+        .get() as { id: string } | null
+      if (!active) return
+      const now = new Date().toISOString()
+      this.db.run(
+        "INSERT OR IGNORE INTO scopes (operation_id, targets, strict, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+        [active.id, JSON.stringify(scope.targets), scope.strict ? 1 : 0, scope.created, now],
+      )
+    } catch {
+      // a malformed relic is not a startup blocker
+    }
   }
 
   static open(configDir: string): HopperStore {
