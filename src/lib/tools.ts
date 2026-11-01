@@ -320,7 +320,7 @@ const FINDING_STATUSES = ["candidate", "observed", "verified", "reportable", "re
  * fence — this tells the agent how to get an operation, it never refuses a
  * call the guard would allow.
  */
-const NO_OPERATION_BOUND = "no operation bound to this session — bind one (/op) or pass operationId"
+const NO_OPERATION_BOUND = "no operation bound to this session — bind one (/hop:operations) or pass operationId"
 
 /**
  * Session-scoped operation default: an explicit operationId always wins and
@@ -442,7 +442,7 @@ export function buildTools(
     {
       name: "operation",
       description:
-        "Ground truth for 'what am I working on'. Creates, lists, or reports this session's bound operation: a named engagement against one target boundary. action=status reports the session's bound operation (or how to get one); action=list returns the whole operation history; action=create needs name and target (host, wildcard domain, or CIDR — URLs are normalized to their hostname). Creating is additive — no other operation is archived or touched — and it never binds this session: the operator binds via /op (or the unbound-scope dialog), and until a binding exists the ledger tools need an explicit operationId. Scoped tools confirm with the operator when a target falls outside the bound operation's scope.",
+        "Ground truth for 'what am I working on'. Creates, lists, or reports this session's bound operation: a named engagement against one target boundary. action=status reports the session's bound operation (or how to get one); action=list returns the whole operation history; action=create needs name and target (host, wildcard domain, or CIDR — URLs are normalized to their hostname). Creating is additive — no other operation is archived or touched — and it never binds this session: the operator binds via /hop:operations (or the unbound-scope dialog), and until a binding exists the ledger tools need an explicit operationId. Scoped tools confirm with the operator when a target falls outside the bound operation's scope.",
       input: {
         type: "object",
         properties: {
@@ -465,7 +465,7 @@ export function buildTools(
               // best-effort — a missed notification never blocks the tool
             }
             return {
-              content: `Operation ${op.name} created (target: ${op.target}, id: ${op.id}).\nNo session is bound to it yet — the operator binds this session via /op or the unbound-scope dialog; until then pass this id as operationId to the ledger tools.`,
+              content: `Operation ${op.name} created (target: ${op.target}, id: ${op.id}).\nNo session is bound to it yet — the operator binds this session via /hop:operations or the unbound-scope dialog; until then pass this id as operationId to the ledger tools.`,
             }
           }
           if (input.action === "status") {

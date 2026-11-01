@@ -98,7 +98,7 @@ export function registerStatus(ctx: StatusCtx): { cleanup: () => void; status: (
     const s = status()
     if (renderedSession() === undefined || s === null || s.operation === null) {
       // unbound, free, or sessionless — one muted line pointing at the binder
-      return <text fg={muted}>hop · no operation — /op to bind</text>
+      return <text fg={muted}>hop · no operation — /hop:operations to bind</text>
     }
     const pick = () => ctx.pickOperation?.()
     const total = LIFECYCLE.reduce((n, key) => n + (s.findings[key as keyof typeof s.findings] ?? 0), 0)

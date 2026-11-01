@@ -1,7 +1,7 @@
 /**
  * The TUI plugin API has no global "current session" getter. Two passive
  * sources keep this holder fresh: the prompt footer slot (rendered inside a
- * session, carries its sessionID) and the tui.session.select event. The /pwn
+ * session, carries its sessionID) and the tui.session.select event. The /hop:pwn
  * kickoff submits to whatever session is current when it runs.
  */
 let current: string | undefined

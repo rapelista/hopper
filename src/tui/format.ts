@@ -72,7 +72,7 @@ export function severityToken(s: string): "error" | "warning" | "base" | "muted"
   return "muted" // info + unknown
 }
 
-/** `/pwn` name default: the hostname's leftmost label, or the whole dotless target. */
+/** `/hop:pwn` name default: the hostname's leftmost label, or the whole dotless target. */
 export function defaultOperationName(target: string): string {
   let host = target.trim().toLowerCase()
   if (/^https?:\/\//.test(host)) {

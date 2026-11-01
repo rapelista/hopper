@@ -192,15 +192,15 @@ describe("status module", () => {
     // switch to s2 — its fetch is in flight, but s1's banner must already be gone
     const pendingFrame = await renderSlot(sidebar, { sessionID: "s2" })
     expect(pendingFrame).not.toContain("juice") // stale display is a cross-session leak too
-    expect(pendingFrame).toContain("hop · no operation — /op to bind")
+    expect(pendingFrame).toContain("hop · no operation — /hop:operations to bind")
     await settle()
     expect(s.statusInputs).toEqual([{ sessionID: "s1" }, { sessionID: "s2" }])
     const unboundFrame = await renderSlot(sidebar, { sessionID: "s2" })
-    expect(unboundFrame).toContain("hop · no operation — /op to bind")
+    expect(unboundFrame).toContain("hop · no operation — /hop:operations to bind")
     expect(unboundFrame).not.toContain("juice") // no cross-session leak
     // no sessionID at all (home): the same hint, and still no fetch
     const sessionless = await renderSlot(sidebar)
-    expect(sessionless).toContain("hop · no operation — /op to bind")
+    expect(sessionless).toContain("hop · no operation — /hop:operations to bind")
     expect(s.statusFetches).toBe(2)
     reg.cleanup()
   })
@@ -217,7 +217,7 @@ describe("status module", () => {
     await settle()
     const failedFrame = await renderSlot(sidebar, { sessionID: "s2" })
     expect(failedFrame).not.toContain("juice") // the catch kept the cleared state, not s1's
-    expect(failedFrame).toContain("hop · no operation — /op to bind")
+    expect(failedFrame).toContain("hop · no operation — /hop:operations to bind")
     reg.cleanup()
   })
 
@@ -452,7 +452,7 @@ describe("panel (per session)", () => {
     expect(p.statusInputs).toEqual([{ sessionID: "s2" }])
     expect(p.findingsFetches).toBe(0)
     const frame = await renderSlot(slot, { name: "hopper.ledger", sessionID: "s2" })
-    expect(frame).toContain("no active operation — start one with /pwn")
+    expect(frame).toContain("no active operation — start one with /hop:pwn")
     reg.cleanup()
   })
 
@@ -462,7 +462,7 @@ describe("panel (per session)", () => {
     await settle()
     expect(p.statusFetches).toBe(0) // nothing resolves without a session
     const frame = await renderSlot(p.slots[0]!, { name: "hopper.ledger" })
-    expect(frame).toContain("no active operation — start one with /pwn")
+    expect(frame).toContain("no active operation — start one with /hop:pwn")
     expect(p.statusFetches).toBe(0)
     const foreign = await renderSlot(p.slots[0]!, { name: "other.panel", sessionID: "s1" })
     expect(foreign).not.toContain("Ledger") // a foreign panel render is a null no-op
@@ -482,7 +482,7 @@ describe("panel (per session)", () => {
     // switch to s2 — its fetch is in flight, but s1's findings must already be gone
     const pending = await renderSlot(slot, { name: "hopper.ledger", sessionID: "s2" })
     expect(pending).not.toContain("t-fa") // stale display is a cross-session leak too
-    expect(pending).toContain("no active operation — start one with /pwn")
+    expect(pending).toContain("no active operation — start one with /hop:pwn")
     await settle()
     expect(p.statusInputs).toEqual([{ sessionID: "s1" }, { sessionID: "s2" }])
     reg.cleanup()
@@ -647,7 +647,7 @@ describe("commands module (registration)", () => {
     registerCommands(c.ctx as never)
     const cmds = commandsOf(c) as Array<{ id: string; slash?: { name: string } }>
     expect(cmds.map((cmd) => cmd.id)).toEqual(["hopper.pwn", "hopper.op", "hopper.opsec", "hopper.ledger"])
-    expect(cmds.map((cmd) => cmd.slash?.name)).toEqual(["pwn", "op", "opsec", "ledger"])
+    expect(cmds.map((cmd) => cmd.slash?.name)).toEqual(["hop:pwn", "hop:operations", "hop:opsec", "hop:ledger"])
   })
 
   test("ledger toggles: opens when closed, closes when already open", () => {

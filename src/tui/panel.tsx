@@ -154,7 +154,7 @@ function LedgerPanel(props: { ctx: PanelCtx; model: () => PanelModel; toggleFull
       {tabBar}
       <Show
         when={props.model().operation}
-        fallback={<text fg={muted}>no active operation — start one with /pwn</text>}
+        fallback={<text fg={muted}>no active operation — start one with /hop:pwn</text>}
       >
         <text> </text>
         <Show when={items().length > 0} fallback={<text fg={muted}>{`no ${tab()} findings`}</text>}>

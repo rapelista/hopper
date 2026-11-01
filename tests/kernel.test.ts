@@ -759,7 +759,7 @@ describe("guard: free and unbound sessions (binding resolution + gate)", () => {
 // ---------------------------------------------------------------------------
 
 describe("agent tools: session-scoped operation defaults (Task 7)", () => {
-  const NO_BINDING = "no operation bound to this session — bind one (/op) or pass operationId"
+  const NO_BINDING = "no operation bound to this session — bind one (/hop:operations) or pass operationId"
   let dir: string
 
   beforeEach(() => {

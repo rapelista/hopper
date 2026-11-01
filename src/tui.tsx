@@ -190,7 +190,7 @@ export default Plugin.define({
     // rpc calls must carry the location or the server consults its default registry
     const location = context.location ?? context.data.location.default()
 
-    // one commands ctx feeds registerCommands and the /op picker; one picker
+    // one commands ctx feeds registerCommands and the /hop:operations picker; one picker
     // instance keeps any stale open dialog superseded when the banner reopens it
     const commandsCtx = {
       keymap: context.keymap,

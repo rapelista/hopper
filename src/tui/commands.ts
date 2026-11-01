@@ -4,11 +4,11 @@ import { currentSession } from "./current-session"
 import type { HopperRpcClient } from "./status"
 
 /**
- * Surface 3 — interactive flows: `/pwn` (create an operation — rebind-confirm
+ * Surface 3 — interactive flows: `/hop:pwn` (create an operation — rebind-confirm
  * when the session is already bound — kickoff prompt with NO auto-OSINT),
- * `/op` (the operation picker: bind the session, or complete/archive/delete
- * from the footer), two-stage `/opsec` (the bound operation directly, or pick
- * one first), plus `/ledger` to open the findings panel.
+ * `/hop:operations` (the operation picker: bind the session, or complete/archive/delete
+ * from the footer), two-stage `/hop:opsec` (the bound operation directly, or pick
+ * one first), plus `/hop:ledger` to open the findings panel.
  */
 
 export function parsePwnArgument(arg: string): { target?: string } {
@@ -80,7 +80,7 @@ export { findingsSummary }
  * dialog.select over ACTIVE operations only (completed/archived are read-only
  * history). Resolves the picked item, or undefined when the operator cancelled
  * or nothing is active (a toast already said why). `actions` carries the /op
- * footer; /opsec's stage one passes none.
+ * footer; /hop:opsec's stage one passes none.
  */
 async function chooseActiveOperation(
   ctx: CommandsCtx,
@@ -101,7 +101,7 @@ async function chooseActiveOperation(
   }
   const active = items.filter((op) => op.status === "active")
   if (active.length === 0) {
-    ctx.ui.toast.show({ title: "Hopper", message: "no active operations — /pwn starts one", variant: "warning" })
+    ctx.ui.toast.show({ title: "Hopper", message: "no active operations — /hop:pwn starts one", variant: "warning" })
     return undefined
   }
   // a torn-down or superseded select must never surface as an unhandled
@@ -126,7 +126,7 @@ async function chooseActiveOperation(
 }
 
 /**
- * The `/op` picker — bind the current session to an active operation, or run
+ * The `/hop:operations` picker — bind the current session to an active operation, or run
  * a lifecycle action on the highlighted one from the footer. Complete/archive
  * and a confirmed delete re-open the picker with the fresh list; unbind keeps
  * it open so the operator can bind a different operation next; a declined
@@ -402,28 +402,28 @@ export function registerCommands(ctx: CommandsCtx): { cleanup: () => void } {
       {
         id: "hopper.pwn",
         title: "Start a Hopper operation",
-        slash: { name: "pwn", arguments: true },
+        slash: { name: "hop:pwn", arguments: true },
         palette: true,
         run: runPwn,
       },
       {
         id: "hopper.op",
         title: "Pick the session's operation",
-        slash: { name: "op" },
+        slash: { name: "hop:operations" },
         palette: true,
         run: () => picker(),
       },
       {
         id: "hopper.opsec",
         title: "Set the opsec posture",
-        slash: { name: "opsec" },
+        slash: { name: "hop:opsec" },
         palette: true,
         run: runOpsec,
       },
       {
         id: "hopper.ledger",
         title: "Toggle the findings ledger",
-        slash: { name: "ledger" },
+        slash: { name: "hop:ledger" },
         palette: true,
         run: () => {
           // toggle: close only OUR panel; another plugin's panel is never touched
