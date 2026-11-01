@@ -197,7 +197,7 @@ export function buildOperationPicker(ctx: CommandsCtx): () => Promise<void> {
     void openArchived()
   }
 
-  /** The `A` view: archived operations only (completed stays read-only history). */
+  /** The `g` (Graveyard) view: archived operations only (completed stays read-only history). */
   const openArchived = async (): Promise<void> => {
     let items: OperationListItem[]
     try {
@@ -249,7 +249,7 @@ export function buildOperationPicker(ctx: CommandsCtx): () => Promise<void> {
         { bind: "u", title: "Unbind session", onTrigger: () => void unbind(sessionID) },
         { bind: "c", title: "Complete", onTrigger: (id) => void setStatus(id, "completed") },
         { bind: "a", title: "Archive", onTrigger: (id) => void setStatus(id, "archived") },
-        { bind: "A", title: "Archived", onTrigger: () => { generation++; void openArchived() } },
+        { bind: "g", title: "Graveyard", onTrigger: () => { generation++; void openArchived() } },
         { bind: "d", title: "Delete", side: "right", onTrigger: (id) => void remove(id) },
       ],
     })

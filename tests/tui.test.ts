@@ -797,7 +797,7 @@ describe("commands module (registration)", () => {
     expect(spec.title).toBe("Bind an operation")
     expect(spec.options.map((o) => o.title)).toEqual(["juice · localhost", "shop · example.test"]) // ghost (completed) is absent
     expect(spec.options.map((o) => o.description)).toEqual(["3 findings", "2 findings"])
-    expect(spec.actions!.map((a) => a.bind)).toEqual(["u", "c", "a", "A", "d"])
+    expect(spec.actions!.map((a) => a.bind)).toEqual(["u", "c", "a", "g", "d"])
     c.selects[0]!.resolve("op2")
     await settle()
     expect(c.calls).toContainEqual({ method: "bind", input: { sessionID: "s1", operationId: "op2" } })
@@ -852,13 +852,13 @@ describe("commands module (registration)", () => {
     { ...opItem("op3", "ghost", "retired.test", { candidate: 0, observed: 0, verified: 0, reportable: 0, rejected: 0, stale: 0 }), status: "completed" },
   ]
 
-  test("A opens the archive list: archived only, completed absent, footer u", async () => {
+  test("g opens the archive list: archived only, completed absent, footer u", async () => {
     const c = commandsCtx()
     c.client.operationsList = async () => ({ items: archiveOps() })
     registerCommands(c.ctx as never)
     c.subs["tui.session.select"]![0]!({ data: { sessionID: "s1" } })
     await runCommand(c, "hopper.op")
-    c.selects[0]!.spec.actions!.find((a) => a.bind === "A")!.onTrigger("op4")
+    c.selects[0]!.spec.actions!.find((a) => a.bind === "g")!.onTrigger("op4")
     await settle()
     expect(c.selects).toHaveLength(2)
     const spec = c.selects[1]!.spec
@@ -873,7 +873,7 @@ describe("commands module (registration)", () => {
     registerCommands(c.ctx as never)
     c.subs["tui.session.select"]![0]!({ data: { sessionID: "s1" } })
     await runCommand(c, "hopper.op")
-    c.selects[0]!.spec.actions!.find((a) => a.bind === "A")!.onTrigger("op4")
+    c.selects[0]!.spec.actions!.find((a) => a.bind === "g")!.onTrigger("op4")
     await settle()
     c.selects[1]!.spec.actions!.find((a) => a.bind === "u")!.onTrigger("op4")
     await settle()
@@ -889,7 +889,7 @@ describe("commands module (registration)", () => {
     registerCommands(c.ctx as never)
     c.subs["tui.session.select"]![0]!({ data: { sessionID: "s1" } })
     await runCommand(c, "hopper.op")
-    c.selects[0]!.spec.actions!.find((a) => a.bind === "A")!.onTrigger("op4")
+    c.selects[0]!.spec.actions!.find((a) => a.bind === "g")!.onTrigger("op4")
     await settle()
     c.selects[1]!.resolve("op5")
     await settle()
@@ -905,7 +905,7 @@ describe("commands module (registration)", () => {
     registerCommands(c.ctx as never)
     c.subs["tui.session.select"]![0]!({ data: { sessionID: "s1" } })
     await runCommand(c, "hopper.op")
-    c.selects[0]!.spec.actions!.find((a) => a.bind === "A")!.onTrigger("op4")
+    c.selects[0]!.spec.actions!.find((a) => a.bind === "g")!.onTrigger("op4")
     await settle()
     // the mock reflects the mutation: the revived op comes back active
     c.client.setOperationStatus = async (input: unknown) => {
@@ -928,7 +928,7 @@ describe("commands module (registration)", () => {
     registerCommands(c.ctx as never)
     c.subs["tui.session.select"]![0]!({ data: { sessionID: "s1" } })
     await runCommand(c, "hopper.op")
-    c.selects[0]!.spec.actions!.find((a) => a.bind === "A")!.onTrigger("op4")
+    c.selects[0]!.spec.actions!.find((a) => a.bind === "g")!.onTrigger("op4")
     await settle()
     // lenient transport shape: the typed error resolves instead of rejecting
     c.client.setOperationStatus = async () => ({ type: "no_operation", message: "unknown operation op4" })
@@ -945,20 +945,20 @@ describe("commands module (registration)", () => {
     registerCommands(c.ctx as never)
     c.subs["tui.session.select"]![0]!({ data: { sessionID: "s1" } })
     await runCommand(c, "hopper.op")
-    c.selects[0]!.spec.actions!.find((a) => a.bind === "A")!.onTrigger("op4")
+    c.selects[0]!.spec.actions!.find((a) => a.bind === "g")!.onTrigger("op4")
     await settle()
     expect(c.toasts.some((t) => JSON.stringify(t).includes("no archived operations"))).toBe(true)
     expect(c.selects).toHaveLength(2)
     expect(c.selects[1]!.spec.title).toBe("Bind an operation") // main picker re-opened, not a dead end
   })
 
-  test("superseded main-picker select after A never binds", async () => {
+  test("superseded main-picker select after g never binds", async () => {
     const c = commandsCtx()
     c.client.operationsList = async () => ({ items: archiveOps() })
     registerCommands(c.ctx as never)
     c.subs["tui.session.select"]![0]!({ data: { sessionID: "s1" } })
     await runCommand(c, "hopper.op")
-    c.selects[0]!.spec.actions!.find((a) => a.bind === "A")!.onTrigger("op4")
+    c.selects[0]!.spec.actions!.find((a) => a.bind === "g")!.onTrigger("op4")
     await settle()
     c.selects[0]!.resolve("op1") // the superseded main picker resolving late
     await settle()
@@ -976,7 +976,7 @@ describe("commands module (registration)", () => {
     try {
       // the host tears the dialog down (or a superseded select rejects) mid-archive-view
       ;(c.ctx.ui.dialog as { select: unknown }).select = () => Promise.reject(new Error("dialog torn down"))
-      c.selects[0]!.spec.actions!.find((a) => a.bind === "A")!.onTrigger("op4")
+      c.selects[0]!.spec.actions!.find((a) => a.bind === "g")!.onTrigger("op4")
       await settle()
       await settle()
     } finally {
