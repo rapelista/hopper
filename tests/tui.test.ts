@@ -5,6 +5,7 @@ import { buildPanelModel, registerPanel } from "../src/tui/panel"
 import { parsePwnArgument, buildKickoffPrompt, registerCommands } from "../src/tui/commands"
 import { registerNotifications } from "../src/tui/notifications"
 import { currentSession } from "../src/tui/current-session"
+import { defaultOperationName } from "../src/tui/format"
 import { registerGuardDialog } from "../src/tui"
 import { LIFECYCLE, cycleStatus } from "../src/tui/format"
 import type { FindingSummary, GuardAskData, OperationListItem, OperationStatusResult } from "../src/rpc"
@@ -1079,8 +1080,36 @@ describe("guard.ask dialog", () => {
   function guardCtx(listItems: OperationListItem[] = opsAll, opts: { rejectSelect?: boolean } = {}) {
     let listFetches = 0
     const selects: Array<{ spec: GuardSelectSpec; resolve: (value: unknown) => void }> = []
+    const prompts: Array<{ spec: { title: string; placeholder?: string }; resolve: (value: unknown) => void }> = []
     const answers: GuardAnswer[] = []
+    const creates: Array<{ name: string; target: string; sessionID?: string }> = []
+    const toasts: unknown[] = []
     const subs: Record<string, Array<(e: { data: unknown }) => void>> = {}
+    // mutable on purpose — failure-path tests swap createOperation per test
+    const client = {
+      operationsList: async () => {
+        listFetches++
+        return { items: listItems }
+      },
+      createOperation: async (i: { name: string; target: string; sessionID?: string }): Promise<
+        { operation: { id: string; name: string; target: string; createdAt: string } } | { type: string; message: string }
+      > => {
+        creates.push(i)
+        return { operation: { id: "op9", name: "fresh", target: "fresh.test", createdAt: "x" } }
+      },
+      guardAnswer: async (input: GuardAnswer) => {
+        answers.push(input)
+        return { accepted: true }
+      },
+      events: {
+        on: (name: string, cb: (e: { data: unknown }) => void) => {
+          ;(subs[name] ??= []).push(cb)
+          return () => {
+            subs[name] = (subs[name] ?? []).filter((x) => x !== cb)
+          }
+        },
+      },
+    }
     const ctx = {
       ui: {
         dialog: {
@@ -1089,30 +1118,14 @@ describe("guard.ask dialog", () => {
             if (opts.rejectSelect) return Promise.reject(new Error("dialog torn down"))
             return new Promise<unknown>((resolve) => selects.push({ spec: i, resolve }))
           },
+          prompt: (i: { title: string; placeholder?: string }) =>
+            new Promise<unknown>((resolve) => prompts.push({ spec: i, resolve })),
         },
+        toast: { show: (t: unknown) => { toasts.push(t) } },
       },
-      client: {
-        rpc: () => ({
-          operationsList: async () => {
-            listFetches++
-            return { items: listItems }
-          },
-          guardAnswer: async (input: GuardAnswer) => {
-            answers.push(input)
-            return { accepted: true }
-          },
-          events: {
-            on: (name: string, cb: (e: { data: unknown }) => void) => {
-              ;(subs[name] ??= []).push(cb)
-              return () => {
-                subs[name] = (subs[name] ?? []).filter((x) => x !== cb)
-              }
-            },
-          },
-        }),
-      },
+      client: { rpc: () => client },
     }
-    return { ctx, selects, answers, subs, get listFetches() { return listFetches } }
+    return { ctx, client, selects, prompts, answers, creates, toasts, subs, get listFetches() { return listFetches } }
   }
 
   const ask = (sessionID = "s1"): GuardAskData => ({
@@ -1128,10 +1141,10 @@ describe("guard.ask dialog", () => {
 
   const OPTION_TITLES = ["Free this session until closed", "Allow once", "Deny"]
 
-  test("ask for the current session: select titled with the reason; bind names the first active op; bind answers with operationId", async () => {
+  test("single active: quick-bind names it; bind answers with operationId", async () => {
     currentSession.reset()
     currentSession.set("s1")
-    const g = guardCtx()
+    const g = guardCtx([opsList[0]!]) // exactly one active op
     const reg = registerGuardDialog(g.ctx as never)
     expect(g.listFetches).toBe(0) // lazy — operationsList is not fetched at setup
     fire(g, ask())
@@ -1139,10 +1152,119 @@ describe("guard.ask dialog", () => {
     expect(g.listFetches).toBe(1) // fetched when the ask arrived
     expect(g.selects).toHaveLength(1)
     expect(g.selects[0]!.spec.title).toBe("websearch is a scoped weapon and this session has no bound operation")
-    expect(g.selects[0]!.spec.options.map((o) => o.title)).toEqual(["Bind: juice · localhost", ...OPTION_TITLES])
+    expect(g.selects[0]!.spec.options.map((o) => o.title)).toEqual(["Bind: juice · localhost", "New operation…", ...OPTION_TITLES])
     g.selects[0]!.resolve("bind")
     await settle()
     expect(g.answers).toEqual([{ askId: "ask1", choice: "bind", operationId: "op1" }])
+    reg.cleanup()
+  })
+
+  test("two actives: chooser sub-picker; the chosen op (not the first) answers", async () => {
+    currentSession.reset()
+    currentSession.set("s1")
+    const g = guardCtx() // opsAll: juice + shop active, ghost completed
+    const reg = registerGuardDialog(g.ctx as never)
+    fire(g, ask())
+    await settle()
+    expect(g.selects[0]!.spec.options.map((o) => o.title)).toEqual(["Choose operation…", "New operation…", ...OPTION_TITLES])
+    g.selects[0]!.resolve("choose")
+    await settle()
+    expect(g.selects).toHaveLength(2)
+    expect(g.selects[1]!.spec.title).toBe("Bind an operation")
+    expect(g.selects[1]!.spec.options.map((o) => o.title)).toEqual(["juice · localhost", "shop · example.test"])
+    expect(g.selects[1]!.spec.options.map((o) => (o as { description?: string }).description)).toEqual(["3 findings", "2 findings"])
+    g.selects[1]!.resolve("op2")
+    await settle()
+    expect(g.answers).toEqual([{ askId: "ask1", choice: "bind", operationId: "op2" }])
+    reg.cleanup()
+  })
+
+  test("new operation: prompt target, create binds the ask's session, answer bind with the new id", async () => {
+    currentSession.reset()
+    currentSession.set("s1")
+    const g = guardCtx([opsList[0]!])
+    const reg = registerGuardDialog(g.ctx as never)
+    fire(g, ask())
+    await settle()
+    g.selects[0]!.resolve("new")
+    await settle()
+    expect(g.prompts).toHaveLength(1)
+    expect(g.prompts[0]!.spec.title).toBe("Operation target")
+    g.prompts[0]!.resolve("fresh.test")
+    await settle()
+    expect(g.creates).toEqual([{ name: defaultOperationName("fresh.test"), target: "fresh.test", sessionID: "s1" }])
+    expect(g.answers).toEqual([{ askId: "ask1", choice: "bind", operationId: "op9" }])
+    reg.cleanup()
+  })
+
+  test("esc in the sub-picker answers deny — no create, nothing left hanging", async () => {
+    currentSession.reset()
+    currentSession.set("s1")
+    const g = guardCtx()
+    const reg = registerGuardDialog(g.ctx as never)
+    fire(g, ask())
+    await settle()
+    g.selects[0]!.resolve("choose")
+    await settle()
+    g.selects[1]!.resolve(undefined)
+    await settle()
+    expect(g.answers).toEqual([{ askId: "ask1", choice: "deny" }])
+    expect(g.creates).toHaveLength(0)
+    reg.cleanup()
+  })
+
+  test("esc in the target prompt answers deny — nothing is created", async () => {
+    currentSession.reset()
+    currentSession.set("s1")
+    const g = guardCtx([opsList[0]!])
+    const reg = registerGuardDialog(g.ctx as never)
+    fire(g, ask())
+    await settle()
+    g.selects[0]!.resolve("new")
+    await settle()
+    g.prompts[0]!.resolve(undefined)
+    await settle()
+    expect(g.answers).toEqual([{ askId: "ask1", choice: "deny" }])
+    expect(g.creates).toHaveLength(0)
+    reg.cleanup()
+  })
+
+  test("create typed error → error toast + deny, never a bind answer with a bogus id", async () => {
+    currentSession.reset()
+    currentSession.set("s1")
+    const g = guardCtx([opsList[0]!])
+    // lenient transport shape: the typed error resolves instead of rejecting
+    g.client.createOperation = async () => ({ type: "no_operation", message: "store unwritable" })
+    const reg = registerGuardDialog(g.ctx as never)
+    fire(g, ask())
+    await settle()
+    g.selects[0]!.resolve("new")
+    await settle()
+    g.prompts[0]!.resolve("fresh.test")
+    await settle()
+    expect(g.toasts.some((t) => (t as { variant?: string }).variant === "error" && JSON.stringify(t).includes("store unwritable"))).toBe(true)
+    expect(g.answers).toEqual([{ askId: "ask1", choice: "deny" }])
+    reg.cleanup()
+  })
+
+  test("torn-down sub-picker answers deny — logged, never an unhandled rejection", async () => {
+    currentSession.reset()
+    currentSession.set("s1")
+    const g = guardCtx()
+    const reg = registerGuardDialog(g.ctx as never)
+    fire(g, ask())
+    await settle()
+    const original = console.error
+    console.error = () => {}
+    try {
+      ;(g.ctx.ui.dialog as { select: unknown }).select = () => Promise.reject(new Error("dialog torn down"))
+      g.selects[0]!.resolve("choose")
+      await settle()
+      await settle()
+    } finally {
+      console.error = original
+    }
+    expect(g.answers).toEqual([{ askId: "ask1", choice: "deny" }])
     reg.cleanup()
   })
 
@@ -1159,14 +1281,14 @@ describe("guard.ask dialog", () => {
     reg.cleanup()
   })
 
-  test("no active operations: the bind option is omitted; free answers without operationId", async () => {
+  test("no active operations: New operation… is the only bind path; free answers without operationId", async () => {
     currentSession.reset()
     currentSession.set("s1")
     const g = guardCtx([opsAll[2]!]) // only the completed ghost
     const reg = registerGuardDialog(g.ctx as never)
     fire(g, ask())
     await settle()
-    expect(g.selects[0]!.spec.options.map((o) => o.title)).toEqual(OPTION_TITLES)
+    expect(g.selects[0]!.spec.options.map((o) => o.title)).toEqual(["New operation…", ...OPTION_TITLES])
     g.selects[0]!.resolve("free")
     await settle()
     expect(g.answers).toEqual([{ askId: "ask1", choice: "free" }])

@@ -67,12 +67,14 @@ const errorType = (value: unknown): string | undefined =>
   typeof value === "object" && value !== null && typeof (value as { type?: unknown }).type === "string"
     ? (value as { type: string }).type
     : undefined
+export { errorType }
 
 /** "3 findings" / "no findings" — the picker's one-line ledger summary. */
 const findingsSummary = (counts: FindingsCounts): string => {
   const total = LIFECYCLE.reduce((n, key) => n + (counts[key] ?? 0), 0)
   return total === 0 ? "no findings" : `${total} findings`
 }
+export { findingsSummary }
 
 /**
  * dialog.select over ACTIVE operations only (completed/archived are read-only
