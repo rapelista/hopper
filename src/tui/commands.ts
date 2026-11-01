@@ -79,7 +79,7 @@ export { findingsSummary }
 /**
  * dialog.select over ACTIVE operations only (completed/archived are read-only
  * history). Resolves the picked item, or undefined when the operator cancelled
- * or nothing is active (a toast already said why). `actions` carries the /op
+ * or nothing is active (a toast already said why). `actions` carries the /hop:operations
  * footer; /hop:opsec's stage one passes none.
  */
 async function chooseActiveOperation(
