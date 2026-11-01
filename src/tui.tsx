@@ -113,8 +113,10 @@ export function registerGuardDialog(ctx: GuardDialogCtx): { cleanup: () => void 
 
     if (picked === "new") {
       // the target is the weapon target that TRIGGERED this ask — the operator
-      // only names the engagement; the kernel normalizes the target for the fence
-      const target = ask.targets[0]
+      // only names the engagement; the kernel normalizes the target for the fence.
+      // `?.` — a missing array is the defensive clause's other half: route to
+      // toast + deny, never a TypeError through `void onAsk`
+      const target = ask.targets?.[0]
       if (typeof target !== "string" || target === "") {
         ctx.ui.toast.show({
           title: "Hopper",

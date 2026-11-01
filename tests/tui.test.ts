@@ -1280,6 +1280,22 @@ describe("guard.ask dialog", () => {
     reg.cleanup()
   })
 
+  test("ask with a MISSING targets array: New operation… denies — no crash, no unhandled rejection", async () => {
+    currentSession.reset()
+    currentSession.set("s1")
+    const g = guardCtx([opsList[0]!])
+    const reg = registerGuardDialog(g.ctx as never)
+    // runtime shape the types forbid but the defensive clause exists for
+    fire(g, { ...ask(), targets: undefined } as never)
+    await settle()
+    g.selects[0]!.resolve("new")
+    await settle()
+    expect(g.answers).toEqual([{ askId: "ask1", choice: "deny" }])
+    expect(g.creates).toHaveLength(0)
+    expect(g.prompts).toHaveLength(0)
+    reg.cleanup()
+  })
+
   test("torn-down sub-picker answers deny — logged, never an unhandled rejection", async () => {
     currentSession.reset()
     currentSession.set("s1")
