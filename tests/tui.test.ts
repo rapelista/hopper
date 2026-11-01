@@ -965,6 +965,43 @@ describe("commands module (registration)", () => {
     expect(c.calls.some((call) => call.method === "bind")).toBe(false)
   })
 
+  test("a torn-down archive select never surfaces as an unhandled rejection", async () => {
+    const c = commandsCtx()
+    c.client.operationsList = async () => ({ items: archiveOps() })
+    registerCommands(c.ctx as never)
+    c.subs["tui.session.select"]![0]!({ data: { sessionID: "s1" } })
+    await runCommand(c, "hopper.op")
+    const original = console.error
+    console.error = () => {}
+    try {
+      // the host tears the dialog down (or a superseded select rejects) mid-archive-view
+      ;(c.ctx.ui.dialog as { select: unknown }).select = () => Promise.reject(new Error("dialog torn down"))
+      c.selects[0]!.spec.actions!.find((a) => a.bind === "A")!.onTrigger("op4")
+      await settle()
+      await settle()
+    } finally {
+      console.error = original
+    }
+    expect(c.selects).toHaveLength(1) // the archive flow bailed — no dialog registered, no unhandled rejection
+    expect(c.calls.some((call) => call.method === "bind")).toBe(false)
+  })
+
+  test("a torn-down main-picker select never surfaces as an unhandled rejection", async () => {
+    const c = commandsCtx()
+    registerCommands(c.ctx as never)
+    c.subs["tui.session.select"]![0]!({ data: { sessionID: "s1" } })
+    const original = console.error
+    console.error = () => {}
+    try {
+      ;(c.ctx.ui.dialog as { select: unknown }).select = () => Promise.reject(new Error("dialog torn down"))
+      await runCommand(c, "hopper.op")
+    } finally {
+      console.error = original
+    }
+    expect(c.selects).toHaveLength(0)
+    expect(c.calls.some((call) => call.method === "bind")).toBe(false)
+  })
+
   test("delete action: confirms first; a decline is a cancel — no delete, no re-open, the picker stays live", async () => {
     const c = commandsCtx()
     registerCommands(c.ctx as never)

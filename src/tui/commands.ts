@@ -102,15 +102,23 @@ async function chooseActiveOperation(
     ctx.ui.toast.show({ title: "Hopper", message: "no active operations — /pwn starts one", variant: "warning" })
     return undefined
   }
-  const picked = await ctx.ui.dialog.select({
-    title: spec.title,
-    options: active.map((op) => ({
-      value: op.id,
-      title: `${op.name} · ${op.target}`,
-      description: findingsSummary(op.findings),
-    })),
-    ...(spec.actions !== undefined ? { actions: spec.actions } : {}),
-  })
+  // a torn-down or superseded select must never surface as an unhandled
+  // rejection (Bun's default would kill the TUI) — same defense as the guard dialog
+  let picked: unknown
+  try {
+    picked = await ctx.ui.dialog.select({
+      title: spec.title,
+      options: active.map((op) => ({
+        value: op.id,
+        title: `${op.name} · ${op.target}`,
+        description: findingsSummary(op.findings),
+      })),
+      ...(spec.actions !== undefined ? { actions: spec.actions } : {}),
+    })
+  } catch (err) {
+    console.error("[hopper-tui] operation select failed:", err)
+    return undefined
+  }
   if (picked === undefined) return undefined // cancelled
   return active.find((op) => op.id === picked)
 }
@@ -206,15 +214,23 @@ export function buildOperationPicker(ctx: CommandsCtx): () => Promise<void> {
       return
     }
     const gen = ++generation
-    const picked = await ctx.ui.dialog.select({
-      title: "Archived operations",
-      options: archived.map((op) => ({
-        value: op.id,
-        title: `${op.name} · ${op.target}`,
-        description: findingsSummary(op.findings),
-      })),
-      actions: [{ bind: "u", title: "Unarchive", onTrigger: (id: string) => void unarchive(id) }],
-    })
+    // a torn-down or superseded select must never surface as an unhandled
+    // rejection (Bun's default would kill the TUI) — same defense as the guard dialog
+    let picked: unknown
+    try {
+      picked = await ctx.ui.dialog.select({
+        title: "Archived operations",
+        options: archived.map((op) => ({
+          value: op.id,
+          title: `${op.name} · ${op.target}`,
+          description: findingsSummary(op.findings),
+        })),
+        actions: [{ bind: "u", title: "Unarchive", onTrigger: (id: string) => void unarchive(id) }],
+      })
+    } catch (err) {
+      console.error("[hopper-tui] archive select failed:", err)
+      return
+    }
     if (gen !== generation) return // superseded by an action or another dialog
     if (typeof picked !== "string") return // cancelled (esc) — nothing re-opens
     void unarchive(picked) // Enter on an item unarchives it too
