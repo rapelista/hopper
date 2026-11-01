@@ -797,7 +797,7 @@ describe("commands module (registration)", () => {
     expect(spec.title).toBe("Bind an operation")
     expect(spec.options.map((o) => o.title)).toEqual(["juice · localhost", "shop · example.test"]) // ghost (completed) is absent
     expect(spec.options.map((o) => o.description)).toEqual(["3 findings", "2 findings"])
-    expect(spec.actions!.map((a) => a.bind)).toEqual(["u", "c", "a", "d"])
+    expect(spec.actions!.map((a) => a.bind)).toEqual(["u", "c", "a", "A", "d"])
     c.selects[0]!.resolve("op2")
     await settle()
     expect(c.calls).toContainEqual({ method: "bind", input: { sessionID: "s1", operationId: "op2" } })
@@ -840,6 +840,127 @@ describe("commands module (registration)", () => {
     expect(c.selects).toHaveLength(3)
     // the first (superseded) select resolving late must NOT fall through to bind
     c.selects[0]!.resolve("op2")
+    await settle()
+    expect(c.calls.some((call) => call.method === "bind")).toBe(false)
+  })
+
+  // fixtures for the archive view: one active, two archived, one completed
+  const archiveOps = (): OperationListItem[] => [
+    opItem("op1", "juice", "localhost", status.findings),
+    { ...opItem("op4", "old-shop", "old.test", { candidate: 0, observed: 1, verified: 0, reportable: 0, rejected: 0, stale: 0 }), status: "archived" },
+    { ...opItem("op5", "older", "ancient.test", { candidate: 0, observed: 0, verified: 0, reportable: 0, rejected: 0, stale: 0 }), status: "archived" },
+    { ...opItem("op3", "ghost", "retired.test", { candidate: 0, observed: 0, verified: 0, reportable: 0, rejected: 0, stale: 0 }), status: "completed" },
+  ]
+
+  test("A opens the archive list: archived only, completed absent, footer u", async () => {
+    const c = commandsCtx()
+    c.client.operationsList = async () => ({ items: archiveOps() })
+    registerCommands(c.ctx as never)
+    c.subs["tui.session.select"]![0]!({ data: { sessionID: "s1" } })
+    await runCommand(c, "hopper.op")
+    c.selects[0]!.spec.actions!.find((a) => a.bind === "A")!.onTrigger("op4")
+    await settle()
+    expect(c.selects).toHaveLength(2)
+    const spec = c.selects[1]!.spec
+    expect(spec.title).toBe("Archived operations")
+    expect(spec.options.map((o) => o.title)).toEqual(["old-shop · old.test", "older · ancient.test"]) // completed ghost absent
+    expect(spec.actions!.map((a) => a.bind)).toEqual(["u"])
+  })
+
+  test("u unarchives the highlighted op and re-opens the archive list", async () => {
+    const c = commandsCtx()
+    c.client.operationsList = async () => ({ items: archiveOps() })
+    registerCommands(c.ctx as never)
+    c.subs["tui.session.select"]![0]!({ data: { sessionID: "s1" } })
+    await runCommand(c, "hopper.op")
+    c.selects[0]!.spec.actions!.find((a) => a.bind === "A")!.onTrigger("op4")
+    await settle()
+    c.selects[1]!.spec.actions!.find((a) => a.bind === "u")!.onTrigger("op4")
+    await settle()
+    expect(c.calls).toContainEqual({ method: "setOperationStatus", input: { operationId: "op4", status: "active" } })
+    expect(c.toasts.some((t) => JSON.stringify(t).includes("operation active"))).toBe(true)
+    expect(c.selects).toHaveLength(3) // archive list re-opened
+    // the mock still returns op4 archived, so the re-opened list is unchanged — the RPC call is the proof
+  })
+
+  test("Enter on an archived op unarchives it", async () => {
+    const c = commandsCtx()
+    c.client.operationsList = async () => ({ items: archiveOps() })
+    registerCommands(c.ctx as never)
+    c.subs["tui.session.select"]![0]!({ data: { sessionID: "s1" } })
+    await runCommand(c, "hopper.op")
+    c.selects[0]!.spec.actions!.find((a) => a.bind === "A")!.onTrigger("op4")
+    await settle()
+    c.selects[1]!.resolve("op5")
+    await settle()
+    expect(c.calls).toContainEqual({ method: "setOperationStatus", input: { operationId: "op5", status: "active" } })
+    expect(c.toasts.some((t) => JSON.stringify(t).includes("operation active"))).toBe(true)
+  })
+
+  test("last archived op unarchived → archive falls back to the main picker", async () => {
+    const c = commandsCtx()
+    // one active (so the main picker opens) + a single archived op
+    let items = [archiveOps()[0]!, archiveOps()[1]!]
+    c.client.operationsList = async () => ({ items })
+    registerCommands(c.ctx as never)
+    c.subs["tui.session.select"]![0]!({ data: { sessionID: "s1" } })
+    await runCommand(c, "hopper.op")
+    c.selects[0]!.spec.actions!.find((a) => a.bind === "A")!.onTrigger("op4")
+    await settle()
+    // the mock reflects the mutation: the revived op comes back active
+    c.client.setOperationStatus = async (input: unknown) => {
+      const i = input as { operationId: string; status: string }
+      c.calls.push({ method: "setOperationStatus", input: i })
+      items = [items[0]!, { ...items[1]!, status: "active" as const }]
+      return { status: i.status }
+    }
+    c.selects[1]!.spec.actions!.find((a) => a.bind === "u")!.onTrigger("op4")
+    await settle()
+    expect(c.calls).toContainEqual({ method: "setOperationStatus", input: { operationId: "op4", status: "active" } })
+    expect(c.selects).toHaveLength(3)
+    expect(c.selects[2]!.spec.title).toBe("Bind an operation") // fell back to the main picker
+    expect(c.selects[2]!.spec.options.map((o) => o.title)).toEqual(["juice · localhost", "old-shop · old.test"]) // revived, now active
+  })
+
+  test("stale archive list: typed no_operation → error toast, re-open still happens", async () => {
+    const c = commandsCtx()
+    c.client.operationsList = async () => ({ items: archiveOps() })
+    registerCommands(c.ctx as never)
+    c.subs["tui.session.select"]![0]!({ data: { sessionID: "s1" } })
+    await runCommand(c, "hopper.op")
+    c.selects[0]!.spec.actions!.find((a) => a.bind === "A")!.onTrigger("op4")
+    await settle()
+    // lenient transport shape: the typed error resolves instead of rejecting
+    c.client.setOperationStatus = async () => ({ type: "no_operation", message: "unknown operation op4" })
+    c.selects[1]!.spec.actions!.find((a) => a.bind === "u")!.onTrigger("op4")
+    await settle()
+    expect(c.toasts.some((t) => (t as { variant?: string }).variant === "error" && JSON.stringify(t).includes("unknown operation op4"))).toBe(true)
+    expect(c.toasts.some((t) => (t as { variant?: string }).variant === "success")).toBe(false) // no false success
+    expect(c.selects).toHaveLength(3) // archive list re-opened anyway
+  })
+
+  test("empty archive list → warning toast, main picker re-opens", async () => {
+    const c = commandsCtx()
+    c.client.operationsList = async () => ({ items: opsAll }) // actives + completed, nothing archived
+    registerCommands(c.ctx as never)
+    c.subs["tui.session.select"]![0]!({ data: { sessionID: "s1" } })
+    await runCommand(c, "hopper.op")
+    c.selects[0]!.spec.actions!.find((a) => a.bind === "A")!.onTrigger("op4")
+    await settle()
+    expect(c.toasts.some((t) => JSON.stringify(t).includes("no archived operations"))).toBe(true)
+    expect(c.selects).toHaveLength(2)
+    expect(c.selects[1]!.spec.title).toBe("Bind an operation") // main picker re-opened, not a dead end
+  })
+
+  test("superseded main-picker select after A never binds", async () => {
+    const c = commandsCtx()
+    c.client.operationsList = async () => ({ items: archiveOps() })
+    registerCommands(c.ctx as never)
+    c.subs["tui.session.select"]![0]!({ data: { sessionID: "s1" } })
+    await runCommand(c, "hopper.op")
+    c.selects[0]!.spec.actions!.find((a) => a.bind === "A")!.onTrigger("op4")
+    await settle()
+    c.selects[0]!.resolve("op1") // the superseded main picker resolving late
     await settle()
     expect(c.calls.some((call) => call.method === "bind")).toBe(false)
   })

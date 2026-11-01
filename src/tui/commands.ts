@@ -178,6 +178,48 @@ export function buildOperationPicker(ctx: CommandsCtx): () => Promise<void> {
     // no re-open: the picker stays live — bind the next operation or cancel
   }
 
+  const unarchive = async (operationId: string): Promise<void> => {
+    generation++ // the archive list that fired this action is superseded
+    await runAndToast(
+      () => rpc.setOperationStatus({ operationId, status: "active" }, opts()),
+      { success: () => "operation active", failure: (err) => `setOperationStatus failed: ${errText(err)}` },
+    )
+    // re-open the archive list; when the unarchive emptied it, its empty-check
+    // chains back to the main picker — never a dead end
+    void openArchived()
+  }
+
+  /** The `A` view: archived operations only (completed stays read-only history). */
+  const openArchived = async (): Promise<void> => {
+    let items: OperationListItem[]
+    try {
+      items = (await rpc.operationsList({}, opts())).items
+    } catch (err) {
+      console.error("[hopper-tui] operationsList failed:", err)
+      ctx.ui.toast.show({ title: "Hopper", message: `operationsList failed: ${errText(err)}`, variant: "error" })
+      return
+    }
+    const archived = items.filter((op) => op.status === "archived")
+    if (archived.length === 0) {
+      ctx.ui.toast.show({ title: "Hopper", message: "no archived operations", variant: "warning" })
+      void open() // the main picker re-opens — the archive view never dead-ends
+      return
+    }
+    const gen = ++generation
+    const picked = await ctx.ui.dialog.select({
+      title: "Archived operations",
+      options: archived.map((op) => ({
+        value: op.id,
+        title: `${op.name} · ${op.target}`,
+        description: findingsSummary(op.findings),
+      })),
+      actions: [{ bind: "u", title: "Unarchive", onTrigger: (id: string) => void unarchive(id) }],
+    })
+    if (gen !== generation) return // superseded by an action or another dialog
+    if (typeof picked !== "string") return // cancelled (esc) — nothing re-opens
+    void unarchive(picked) // Enter on an item unarchives it too
+  }
+
   const open = async (): Promise<void> => {
     const sessionID = currentSession.get()
     if (sessionID === undefined) {
@@ -191,6 +233,7 @@ export function buildOperationPicker(ctx: CommandsCtx): () => Promise<void> {
         { bind: "u", title: "Unbind session", onTrigger: () => void unbind(sessionID) },
         { bind: "c", title: "Complete", onTrigger: (id) => void setStatus(id, "completed") },
         { bind: "a", title: "Archive", onTrigger: (id) => void setStatus(id, "archived") },
+        { bind: "A", title: "Archived", onTrigger: () => { generation++; void openArchived() } },
         { bind: "d", title: "Delete", side: "right", onTrigger: (id) => void remove(id) },
       ],
     })
