@@ -207,6 +207,21 @@ describe("HopperStore lifecycle", () => {
     store.close()
   })
 
+  test("setOperationStatus unarchives: terminal → active persists, touches no bindings", () => {
+    const { store } = openStore()
+    const op = store.createOperation("revive", "revive.test")
+    const otherOp = store.createOperation("other", "other.test")
+    store.setOperationStatus(op.id, "archived")
+    const revived = store.setOperationStatus(op.id, "active")
+    expect(revived).toMatchObject({ id: op.id, status: "active" })
+    expect(store.listOperations().find((o) => o.id === op.id)?.status).toBe("active") // persisted
+    // a binding on a DIFFERENT op must survive an unarchive — the DELETE is scoped to the op, and no bindings can point at a terminal op anyway
+    store.upsertBinding("ses_1", otherOp.id)
+    store.setOperationStatus(op.id, "active")
+    expect(store.getBinding("ses_1")).toEqual({ operation_id: otherOp.id, mode: "bound" })
+    store.close()
+  })
+
   test("deleteOperation removes scopes, bindings, findings, evidence, and orphaned evidence_findings links", () => {
     const { store, dir } = openStore()
     const op = store.createOperation("doomed", "doomed.test")

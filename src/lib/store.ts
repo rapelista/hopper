@@ -358,11 +358,14 @@ export class HopperStore {
   // -- operation lifecycle --------------------------------------------------
 
   /**
-   * Flip an operation to `completed` or `archived` and unbind every session
-   * bound to it (a closed operation owns no sessions) — one transaction.
+   * Flip an operation's status — one transaction. Transitions TO a terminal
+   * status (`completed`/`archived`) unbind every session bound to the op (a
+   * closed operation owns no sessions). Transition to `active` (unarchive)
+   * finds no bindings to remove — bind and guard-answer refuse terminal ops —
+   * so the DELETE is a natural no-op.
    * Returns the updated operation, or null when the id is unknown.
    */
-  setOperationStatus(operationId: string, status: "completed" | "archived"): Operation | null {
+  setOperationStatus(operationId: string, status: "completed" | "archived" | "active"): Operation | null {
     const existing = this.db.query("SELECT * FROM operations WHERE id = ?").get(operationId) as
       | Record<string, unknown>
       | null

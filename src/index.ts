@@ -413,7 +413,7 @@ export default Plugin.define({
         return { operationId: null }
       },
       setOperationStatus: async (input: unknown, context: RpcErrCtx<"no_operation">) => {
-        const { operationId, status } = input as { operationId: string; status: "completed" | "archived" }
+        const { operationId, status } = input as { operationId: string; status: "completed" | "archived" | "active" }
         const store = HopperStore.open(configDir)
         let affected: string[] = []
         let updated = false

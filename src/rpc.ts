@@ -284,7 +284,7 @@ export const Hopper = Rpc.define({
         type: "object",
         properties: {
           operationId: { type: "string" },
-          status: { type: "string", enum: ["completed", "archived"] },
+          status: { type: "string", enum: ["completed", "archived", "active"] },
         },
         required: ["operationId", "status"],
         additionalProperties: false,

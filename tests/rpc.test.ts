@@ -325,6 +325,17 @@ describe("hopper rpc handlers: binding model (spec §6)", () => {
     expect(no.type).toBe("no_operation")
   })
 
+  test("setOperationStatus: active (unarchive) accepted, operation.changed emitted, no binding.changed", async () => {
+    const m = await setup()
+    const created = await handler(m, "createOperation")({ name: "unarc", target: "unarc.test" }, handlerCtx())
+    await handler(m, "setOperationStatus")({ operationId: created.operation.id, status: "archived" }, handlerCtx())
+    m.rpcEvents.length = 0 // isolate: drop create/archive emissions
+    const res = await handler(m, "setOperationStatus")({ operationId: created.operation.id, status: "active" }, handlerCtx())
+    expect(res).toEqual({ status: "active" })
+    expect(m.rpcEvents).toContainEqual({ name: "operation.changed", data: { operationId: created.operation.id } })
+    expect(m.rpcEvents).not.toContainEqual(expect.objectContaining({ name: "binding.changed" }))
+  })
+
   test("deleteOperation: removes the op, notifies affected sessions; unknown → no_operation", async () => {
     const m = await setup()
     const created = await handler(m, "createOperation")({ name: "del", target: "del.test" }, handlerCtx())

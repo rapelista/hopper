@@ -33,7 +33,7 @@ export interface CommandsRpc extends HopperRpcClient {
   setOpsec: (i: { operationId: string; level: "normal" | "strict" }, options?: { location?: unknown }) => Promise<{ opsec: "normal" | "strict" }>
   bind: (i: { sessionID: string; operationId: string }, options?: { location?: unknown }) => Promise<{ operationId: string }>
   unbind: (i: { sessionID: string }, options?: { location?: unknown }) => Promise<{ operationId: string | null }>
-  setOperationStatus: (i: { operationId: string; status: "completed" | "archived" }, options?: { location?: unknown }) => Promise<{ status: string }>
+  setOperationStatus: (i: { operationId: string; status: "completed" | "archived" | "active" }, options?: { location?: unknown }) => Promise<{ status: string }>
   deleteOperation: (i: { operationId: string }, options?: { location?: unknown }) => Promise<{ ok: boolean }>
 }
 
