@@ -1179,20 +1179,21 @@ describe("guard.ask dialog", () => {
     reg.cleanup()
   })
 
-  test("new operation: prompt target, create binds the ask's session, answer bind with the new id", async () => {
+  test("new operation: target auto from the ask, name prompted and preserved", async () => {
     currentSession.reset()
     currentSession.set("s1")
     const g = guardCtx([opsList[0]!])
     const reg = registerGuardDialog(g.ctx as never)
-    fire(g, ask())
+    fire(g, ask()) // ask() carries targets: ["example.test"]
     await settle()
     g.selects[0]!.resolve("new")
     await settle()
     expect(g.prompts).toHaveLength(1)
-    expect(g.prompts[0]!.spec.title).toBe("Operation target")
-    g.prompts[0]!.resolve("fresh.test")
+    expect(g.prompts[0]!.spec.title).toBe("Operation name — target example.test")
+    expect(g.prompts[0]!.spec.placeholder).toBe("example") // defaultOperationName hint
+    g.prompts[0]!.resolve("Alam Sutera")
     await settle()
-    expect(g.creates).toEqual([{ name: defaultOperationName("fresh.test"), target: "fresh.test", sessionID: "s1" }])
+    expect(g.creates).toEqual([{ name: "Alam Sutera", target: "example.test", sessionID: "s1" }])
     expect(g.answers).toEqual([{ askId: "ask1", choice: "bind", operationId: "op9" }])
     reg.cleanup()
   })
@@ -1213,7 +1214,7 @@ describe("guard.ask dialog", () => {
     reg.cleanup()
   })
 
-  test("esc in the target prompt answers deny — nothing is created", async () => {
+  test("esc in the name prompt answers deny — nothing is created", async () => {
     currentSession.reset()
     currentSession.set("s1")
     const g = guardCtx([opsList[0]!])
@@ -1240,14 +1241,14 @@ describe("guard.ask dialog", () => {
     await settle()
     g.selects[0]!.resolve("new")
     await settle()
-    g.prompts[0]!.resolve("fresh.test")
+    g.prompts[0]!.resolve("Pretty Name")
     await settle()
     expect(g.toasts.some((t) => (t as { variant?: string }).variant === "error" && JSON.stringify(t).includes("store unwritable"))).toBe(true)
     expect(g.answers).toEqual([{ askId: "ask1", choice: "deny" }])
     reg.cleanup()
   })
 
-  test("blank target prompt answers deny — no garbage operation, no bind", async () => {
+  test("blank name prompt answers deny — no garbage operation, no bind", async () => {
     currentSession.reset()
     currentSession.set("s1")
     const g = guardCtx([opsList[0]!])
@@ -1260,6 +1261,22 @@ describe("guard.ask dialog", () => {
     await settle()
     expect(g.answers).toEqual([{ askId: "ask1", choice: "deny" }])
     expect(g.creates).toHaveLength(0)
+    reg.cleanup()
+  })
+
+  test("ask without targets: New operation… toasts and denies — no prompt, no create", async () => {
+    currentSession.reset()
+    currentSession.set("s1")
+    const g = guardCtx([opsList[0]!])
+    const reg = registerGuardDialog(g.ctx as never)
+    fire(g, { ...ask(), targets: [] })
+    await settle()
+    g.selects[0]!.resolve("new")
+    await settle()
+    expect(g.toasts.some((t) => (t as { variant?: string }).variant === "error" && JSON.stringify(t).includes("the ask carries no target"))).toBe(true)
+    expect(g.prompts).toHaveLength(0)
+    expect(g.creates).toHaveLength(0)
+    expect(g.answers).toEqual([{ askId: "ask1", choice: "deny" }])
     reg.cleanup()
   })
 

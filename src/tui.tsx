@@ -112,19 +112,32 @@ export function registerGuardDialog(ctx: GuardDialogCtx): { cleanup: () => void 
     }
 
     if (picked === "new") {
-      let target: string | undefined
-      try {
-        target = await ctx.ui.dialog.prompt({ title: "Operation target" })
-      } catch (err) {
-        console.error("[hopper-tui] target prompt failed:", err)
-        target = undefined
+      // the target is the weapon target that TRIGGERED this ask — the operator
+      // only names the engagement; the kernel normalizes the target for the fence
+      const target = ask.targets[0]
+      if (typeof target !== "string" || target === "") {
+        ctx.ui.toast.show({
+          title: "Hopper",
+          message: "Operation create failed: the ask carries no target",
+          variant: "error",
+        })
+        return void answer({ askId: ask.askId, choice: "deny" })
       }
-      // a blank submit is a cancel (the /pwn prompt treats it the same) —
-      // never create an empty-target operation and never allow the weapon on it
-      if (target === undefined || target.trim() === "") return void answer({ askId: ask.askId, choice: "deny" })
+      let name: string | undefined
+      try {
+        name = await ctx.ui.dialog.prompt({
+          title: `Operation name — target ${target}`,
+          placeholder: defaultOperationName(target),
+        })
+      } catch (err) {
+        console.error("[hopper-tui] name prompt failed:", err)
+        name = undefined
+      }
+      // a blank submit is a cancel — never create an unnamed operation
+      if (name === undefined || name.trim() === "") return void answer({ askId: ask.askId, choice: "deny" })
       try {
         const res = await rpc.createOperation(
-          { name: defaultOperationName(target), target, sessionID: ask.sessionID },
+          { name: name.trim(), target, sessionID: ask.sessionID },
           opts(),
         )
         // typed errors may RESOLVE on the lenient transport — never treat one as success
