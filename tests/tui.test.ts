@@ -1247,6 +1247,22 @@ describe("guard.ask dialog", () => {
     reg.cleanup()
   })
 
+  test("blank target prompt answers deny — no garbage operation, no bind", async () => {
+    currentSession.reset()
+    currentSession.set("s1")
+    const g = guardCtx([opsList[0]!])
+    const reg = registerGuardDialog(g.ctx as never)
+    fire(g, ask())
+    await settle()
+    g.selects[0]!.resolve("new")
+    await settle()
+    g.prompts[0]!.resolve("   ") // blank submit is a cancel, not an operation
+    await settle()
+    expect(g.answers).toEqual([{ askId: "ask1", choice: "deny" }])
+    expect(g.creates).toHaveLength(0)
+    reg.cleanup()
+  })
+
   test("torn-down sub-picker answers deny — logged, never an unhandled rejection", async () => {
     currentSession.reset()
     currentSession.set("s1")

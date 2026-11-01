@@ -119,7 +119,9 @@ export function registerGuardDialog(ctx: GuardDialogCtx): { cleanup: () => void 
         console.error("[hopper-tui] target prompt failed:", err)
         target = undefined
       }
-      if (target === undefined) return void answer({ askId: ask.askId, choice: "deny" })
+      // a blank submit is a cancel (the /pwn prompt treats it the same) —
+      // never create an empty-target operation and never allow the weapon on it
+      if (target === undefined || target.trim() === "") return void answer({ askId: ask.askId, choice: "deny" })
       try {
         const res = await rpc.createOperation(
           { name: defaultOperationName(target), target, sessionID: ask.sessionID },
